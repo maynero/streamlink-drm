@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import logging
 import warnings
-from collections.abc import Iterable
 from datetime import timezone
 from errno import EINVAL, EPIPE
 from inspect import currentframe, getframeinfo
 from io import BytesIO, TextIOWrapper
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import freezegun
 import pytest
 
 from streamlink import logger
 from streamlink.exceptions import StreamlinkDeprecationWarning, StreamlinkWarning
+from streamlink.logger import StreamlinkLogger, getLogger
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 def getvalue(output: TextIOWrapper, size: int = -1):
@@ -45,7 +50,7 @@ def log(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, output:
     if "logfile" in request.fixturenames:
         params["filename"] = request.getfixturevalue("logfile")
 
-    fakeroot = logging.getLogger("streamlink.test")
+    fakeroot = getLogger("streamlink.test")
 
     monkeypatch.setattr("streamlink.logger.root", fakeroot)
     monkeypatch.setattr("streamlink.utils.times.LOCAL", timezone.utc)
@@ -78,13 +83,36 @@ class TestLogging:
     ):
         params = getattr(request, "param", {})
 
-        root = logging.getLogger("streamlink")
-        monkeypatch.setattr("streamlink.logger.root", root)
-
         with pytest.raises(Exception) as cm:  # noqa: PT011
             logger.basicConfig(stream=output, **params)
 
         return cm.value
+
+    def test_root(self):
+        assert isinstance(logger.root, StreamlinkLogger)
+        assert logger.root.name == "streamlink"
+        assert logger.root.parent is logging.root
+
+    def test_get_logger(self):
+        child_a = getLogger("streamlink.test")
+        child_b = getLogger("test")
+        child_c = getLogger("other")
+        assert isinstance(child_a, StreamlinkLogger)
+        assert child_b is child_a
+        assert child_a.parent is logger.root
+        assert isinstance(child_c, StreamlinkLogger)
+        assert child_c is not child_a
+        assert child_c.parent is logger.root
+
+    def test_logging_get_logger(self):
+        root = logging.getLogger("streamlink")
+        assert isinstance(root, StreamlinkLogger)
+        assert root is logger.root
+        # we can't safely make an assertion about the logger class when calling `logging.getLogger()`,
+        # as it depends on the manager's loggerClass value or the last `logging.setLoggerClass()` call.
+        child = logging.getLogger("streamlink.doesnotexistyet")
+        assert child.parent is logger.root
+        assert logging.getLogger("other").parent is not logger.root
 
     @pytest.mark.parametrize(
         ("name", "level"),
@@ -108,9 +136,9 @@ class TestLogging:
         assert logger.levels == ["none", "critical", "error", "warning", "info", "debug", "trace", "all"]
 
     def test_default_level(self):
-        assert logging.getLogger("streamlink").level == logger.WARNING
+        assert logger.root.level == logger.WARNING
 
-    def test_level(self, log: logging.Logger, output: TextIOWrapper):
+    def test_level(self, log: StreamlinkLogger, output: TextIOWrapper):
         log.setLevel("info")
         log.debug("test")
         output.seek(0)
@@ -120,36 +148,35 @@ class TestLogging:
         log.debug("test")
         assert output.tell() != 0
 
-    def test_level_none(self, log: logging.Logger, output: TextIOWrapper):
+    def test_level_none(self, log: StreamlinkLogger, output: TextIOWrapper):
         log.setLevel("none")
         log.critical("test")
         log.error("test")
         log.warning("test")
         log.info("test")
         log.debug("test")
-        log.trace("test")  # type: ignore[attr-defined]
-        log.trace("paranoid")  # type: ignore[attr-defined]
+        log.trace("test")
         assert not getvalue(output)
 
-    def test_output(self, log: logging.Logger, output: TextIOWrapper):
+    def test_output(self, log: StreamlinkLogger, output: TextIOWrapper):
         log.setLevel("debug")
         log.debug("test")
         assert getvalue(output) == "[test][debug] test\n"
 
     @pytest.mark.parametrize(
-        ("loglevel", "calllevel", "expected"),
+        ("log", "level", "expected"),
         [
-            (logger.DEBUG, logger.TRACE, ""),
-            (logger.TRACE, logger.TRACE, "[test][trace] test\n"),
-            (logger.TRACE, logger.DEBUG, "[test][debug] test\n"),
-            (logger.TRACE, logger.ALL, ""),
-            (logger.ALL, logger.ALL, "[test][all] test\n"),
-            (logger.ALL, logger.TRACE, "[test][trace] test\n"),
+            ({"level": logger.DEBUG}, logger.TRACE, ""),
+            ({"level": logger.TRACE}, logger.TRACE, "[test][trace] test\n"),
+            ({"level": logger.TRACE}, logger.DEBUG, "[test][debug] test\n"),
+            ({"level": logger.TRACE}, logger.ALL, ""),
+            ({"level": logger.ALL}, logger.ALL, "[test][all] test\n"),
+            ({"level": logger.ALL}, logger.TRACE, "[test][trace] test\n"),
         ],
+        indirect=["log"],
     )
-    def test_custom_output(self, log: logging.Logger, output: TextIOWrapper, loglevel: int, calllevel: int, expected: str):
-        log.setLevel(loglevel)
-        log.log(calllevel, "test")
+    def test_custom_output(self, log: StreamlinkLogger, output: TextIOWrapper, level: int, expected: str):
+        log.log(level, "test")
         assert getvalue(output) == expected
 
     # https://github.com/streamlink/streamlink/issues/4862
@@ -160,14 +187,56 @@ class TestLogging:
             (logger.ALL, "all"),
         ],
     )
-    def test_custom_module_name(self, caplog: pytest.LogCaptureFixture, log: logging.Logger, level: int, levelname: str):
+    def test_custom_module_name(self, caplog: pytest.LogCaptureFixture, log: StreamlinkLogger, level: int, levelname: str):
         caplog.set_level(1)
-        log = logging.getLogger(self.__class__.__module__)
+        log = getLogger(self.__class__.__module__)
         getattr(log, levelname)("foo")
         log.log(level, "bar")
         assert [(record.module, record.levelname, record.message) for record in caplog.records] == [
             ("test_logger", levelname, "foo"),
             ("test_logger", levelname, "bar"),
+        ]
+
+    def test_logrecord(self, caplog: pytest.LogCaptureFixture, log: StreamlinkLogger):
+        def get_lineno():
+            frame = currentframe()
+            assert frame
+            assert frame.f_back
+            return getframeinfo(frame.f_back).lineno
+
+        caplog.set_level(1, "streamlink")
+        log.info("test %(a)s %(b)s", {"a": "foo", "b": "bar"}, exc_info=ValueError("err"), stack_info=True)
+        lineno = get_lineno() - 1
+
+        assert [
+            (
+                r.exc_text,
+                r.filename,
+                r.funcName,
+                r.levelname,
+                r.levelno,
+                r.lineno,
+                r.message,
+                r.module,
+                r.name,
+                r.pathname,
+                r.stack_info is not None and len(r.stack_info) > 0,
+            )
+            for r in caplog.records
+        ] == [
+            (
+                "ValueError: err",
+                "test_logger.py",
+                "test_logrecord",
+                "info",
+                20,
+                lineno,
+                "test foo bar",
+                "test_logger",
+                "test",
+                __file__,
+                True,
+            ),
         ]
 
     @pytest.mark.parametrize(
@@ -177,7 +246,7 @@ class TestLogging:
             (logger.INFO, "[test][info] foo\n[test][info] bar\n"),
         ],
     )
-    def test_iter(self, log: logger.StreamlinkLogger, output: TextIOWrapper, level: int, expected: str):
+    def test_iter(self, log: StreamlinkLogger, output: TextIOWrapper, level: int, expected: str):
         def iterator():
             yield "foo"
             yield "bar"
@@ -193,7 +262,7 @@ class TestLogging:
         ],
         indirect=True,
     )
-    def test_style_percent(self, log: logging.Logger, output: TextIOWrapper):
+    def test_style_percent(self, log: StreamlinkLogger, output: TextIOWrapper):
         log.setLevel("info")
         log.info("test")
         assert getvalue(output) == "[test][info] test\n"
@@ -211,7 +280,7 @@ class TestLogging:
         ],
         indirect=True,
     )
-    def test_datefmt_default(self, log: logging.Logger, output: TextIOWrapper):
+    def test_datefmt_default(self, log: StreamlinkLogger, output: TextIOWrapper):
         log.setLevel("info")
         log.info("test")
         assert getvalue(output) == "[03:04:05][test][info] test\n"
@@ -224,7 +293,7 @@ class TestLogging:
         ],
         indirect=True,
     )
-    def test_datefmt_custom(self, log: logging.Logger, output: TextIOWrapper):
+    def test_datefmt_custom(self, log: StreamlinkLogger, output: TextIOWrapper):
         log.setLevel("info")
         log.info("test")
         assert getvalue(output) == "[03:04:05.123456+0000][test][info] test\n"
@@ -255,12 +324,12 @@ class TestLogging:
         ],
         indirect=["output"],
     )
-    def test_logstream_encoding(self, log: logging.Logger, output: TextIOWrapper, expected: str):
+    def test_logstream_encoding(self, log: StreamlinkLogger, output: TextIOWrapper, expected: str):
         log.setLevel("info")
         log.info("Bär: 🐻")
         assert getvalue(output) == f"[test][info] {expected}\n"
 
-    def test_logstream_switch(self, log: logging.Logger, output: TextIOWrapper):
+    def test_logstream_switch(self, log: StreamlinkLogger, output: TextIOWrapper):
         output_ascii = TextIOWrapper(BytesIO(), encoding="ascii", errors="strict")
         log.setLevel("info")
 
@@ -268,16 +337,16 @@ class TestLogging:
         assert getvalue(output) == "[test][info] Bär: 🐻\n"
         assert getvalue(output_ascii) == ""
 
-        assert isinstance(log.handlers[0], logging.StreamHandler)
-        # noinspection PyUnresolvedReferences
-        log.handlers[0].setStream(output_ascii)
+        handler = log.handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
+        handler.setStream(output_ascii)  # type: ignore  # Expected: Never ???
 
         log.info("Bär: 🐻")
         assert getvalue(output) == "[test][info] Bär: 🐻\n"
         assert getvalue(output_ascii) == "[test][info] B\\xe4r: \\U0001f43b\n"
 
     @pytest.mark.parametrize("log", [pytest.param({"stream": None}, id="no-stdout")], indirect=["log"])
-    def test_no_stream(self, log: logging.Logger):
+    def test_no_stream(self, log: StreamlinkLogger):
         assert not log.handlers
 
     @pytest.mark.parametrize(
@@ -291,7 +360,7 @@ class TestLogging:
         self,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
-        log: logging.Logger,
+        log: StreamlinkLogger,
         errno: int,
     ):
         def flush(*_, **__):
@@ -311,7 +380,7 @@ class TestLogging:
         assert not out
         assert not err
 
-    def test_logfile(self, logfile: Path, log: logging.Logger, output: TextIOWrapper):
+    def test_logfile(self, logfile: Path, log: StreamlinkLogger, output: TextIOWrapper):
         log.setLevel("info")
         log.info("Hello world, Γειά σου Κόσμε, こんにちは世界")  # noqa: RUF001
         log.handlers[0].flush()
@@ -334,7 +403,7 @@ class TestCaptureWarnings:
 
         return lineno
 
-    def test_no_capture(self, log: logging.Logger, output: TextIOWrapper):
+    def test_no_capture(self, log: StreamlinkLogger, output: TextIOWrapper):
         with pytest.warns(UserWarning, match=r"^Test warning$"):
             self._warn([("Test warning", UserWarning)])
         assert getvalue(output) == ""
@@ -353,7 +422,7 @@ class TestCaptureWarnings:
     def test_capture(
         self,
         recwarn: pytest.WarningsRecorder,
-        log: logging.Logger,
+        log: StreamlinkLogger,
         output: TextIOWrapper,
         warning: tuple[str, type[Warning]],
         expected: str,
@@ -369,20 +438,39 @@ class TestCaptureWarnings:
         self,
         recwarn: pytest.WarningsRecorder,
         caplog: pytest.LogCaptureFixture,
-        log: logging.Logger,
+        log: StreamlinkLogger,
     ):
         lineno = self._warn([("Test warning", UserWarning)])
         path = Path(__file__)
         assert recwarn.list == []
-        assert [(r.name, r.levelname, r.pathname, r.filename, r.module, r.lineno, r.message) for r in caplog.records] == [
-            ("warnings", "userwarning", __file__, path.name, path.stem, lineno, f"Test warning\n  {__file__}:{lineno}"),
+        assert [
+            (
+                r.name,
+                r.levelname,
+                r.pathname,
+                r.filename,
+                r.module,
+                r.lineno,
+                r.message,
+            )
+            for r in caplog.records
+        ] == [
+            (
+                "warnings",
+                "userwarning",
+                __file__,
+                path.name,
+                path.stem,
+                lineno,
+                f"Test warning\n  {__file__}:{lineno}",
+            ),
         ]
 
     @pytest.mark.parametrize("log", [{"capture_warnings": True}], indirect=["log"])
     def test_capture_consecutive(
         self,
         recwarn: pytest.WarningsRecorder,
-        log: logging.Logger,
+        log: StreamlinkLogger,
         output: TextIOWrapper,
     ):
         lineno = self._warn([("foo", DeprecationWarning), ("bar", FutureWarning)])
@@ -396,7 +484,7 @@ class TestCaptureWarnings:
     def test_capture_consecutive_once(
         self,
         recwarn: pytest.WarningsRecorder,
-        log: logging.Logger,
+        log: StreamlinkLogger,
         output: TextIOWrapper,
     ):
         lineno = self._warn([("foo", UserWarning), ("foo", UserWarning)], "once")
@@ -415,7 +503,7 @@ class TestCaptureWarnings:
     def test_ignored(
         self,
         recwarn: pytest.WarningsRecorder,
-        log: logging.Logger,
+        log: StreamlinkLogger,
         output: TextIOWrapper,
         warning: tuple[str, type[Warning]],
     ):

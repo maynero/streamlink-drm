@@ -4,16 +4,14 @@ import base64
 import hashlib
 import importlib.metadata
 import json
-import logging
 import pkgutil
 import re
-from collections.abc import Iterator, Mapping
 from contextlib import suppress
 from pathlib import Path
-from types import ModuleType
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypeAlias, TypedDict, cast
 
 import streamlink.plugins
+from streamlink.logger import getLogger
 from streamlink.options import Argument, Arguments
 
 # noinspection PyProtectedMember
@@ -22,15 +20,13 @@ from streamlink.utils.module import exec_module, get_finder
 
 
 if TYPE_CHECKING:
-    try:
-        from typing import TypeAlias  # type: ignore[attr-defined]
-    except ImportError:
-        from typing_extensions import TypeAlias
+    from collections.abc import Iterator, Mapping
+    from types import ModuleType
 
     from _typeshed.importlib import PathEntryFinderProtocol
 
 
-log = logging.getLogger(".".join(__name__.split(".")[:-1]))
+log = getLogger(".".join(__name__.split(".")[:-1]))
 
 # The path to Streamlink's built-in plugins
 _PLUGINS_PATH = Path(streamlink.plugins.__path__[0])
@@ -180,7 +176,8 @@ class StreamlinkPlugins:
     def _load_plugins_from_path(self, path: str | Path) -> dict[str, type[Plugin]]:
         plugins: dict[str, type[Plugin]] = {}
         for finder, name, _ in pkgutil.iter_modules([str(path)]):
-            lookup = self._load_plugin_from_finder(name, finder=finder)  # type: ignore[arg-type]
+            finder = cast("PathEntryFinderProtocol", finder)
+            lookup = self._load_plugin_from_finder(name, finder=finder)
             if lookup is None:
                 continue
             mod, plugin = lookup
@@ -209,9 +206,10 @@ class StreamlinkPlugins:
 
 _RE_STRIP_JSON_COMMENTS = re.compile(rb"^(?:\s*//[^\n]*\n+)+")
 
-_TListOfConstants: TypeAlias = "list[bool | int | float | str | None]"
-_TConstantOrListOfConstants: TypeAlias = "bool | int | float | str | _TListOfConstants | None"
-_TMappingOfConstantOrListOfConstants: TypeAlias = "dict[str, _TConstantOrListOfConstants]"
+if TYPE_CHECKING:
+    _TListOfConstants: TypeAlias = list[bool | int | float | str | None]
+    _TConstantOrListOfConstants: TypeAlias = bool | int | float | str | _TListOfConstants | None
+    _TMappingOfConstantOrListOfConstants: TypeAlias = dict[str, _TConstantOrListOfConstants]
 
 
 class _TPluginMatcherData(TypedDict):
@@ -337,7 +335,7 @@ class StreamlinkPluginsData:
 
     @staticmethod
     def _build_argument(data: _TPluginArgumentData) -> Argument | None:
-        name: str = data.get("name")  # type: ignore[assignment]
+        name = data.get("name")
         type_data = data.get("type")
         if not type_data:
             argument_type = None

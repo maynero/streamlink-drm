@@ -2,28 +2,27 @@ from __future__ import annotations
 
 import base64
 import re
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import trio
 
-from streamlink.session import Streamlink
-from streamlink.webbrowser.cdp.connection import CDPConnection, CDPSession
+from streamlink.webbrowser.cdp.connection import CDPConnection
 from streamlink.webbrowser.cdp.devtools import fetch, network, page, runtime, target
 from streamlink.webbrowser.cdp.exceptions import CDPError
 from streamlink.webbrowser.chromium import ChromiumWebbrowser
 
 
 if TYPE_CHECKING:
-    try:
-        from typing import Self, TypeAlias  # type: ignore[attr-defined]
-    except ImportError:
-        from typing_extensions import Self, TypeAlias
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, MutableMapping
 
+    from typing_extensions import Self
 
-TRequestHandlerCallable: TypeAlias = "Callable[[CDPClientSession, fetch.RequestPaused], Awaitable]"
+    from streamlink.session import Streamlink
+    from streamlink.webbrowser.cdp.connection import CDPSession
+
+    TRequestHandlerCallable: TypeAlias = "Callable[[CDPClientSession, fetch.RequestPaused], Awaitable]"
 
 
 _re_url_pattern_wildcard = re.compile(r"(.+?)?(\\+)?([*?])")
@@ -69,7 +68,7 @@ class RequestPausedHandler:
 class CMRequestProxy:
     body: str
     response_code: int
-    response_headers: Mapping[str, str] | None
+    response_headers: MutableMapping[str, str] | None
 
 
 class CDPClient:
@@ -399,7 +398,7 @@ class CDPClientSession:
         self,
         request: fetch.RequestPaused,
         response_code: int = 200,
-        response_headers: Mapping[str, str] | None = None,
+        response_headers: MutableMapping[str, str] | None = None,
     ) -> AsyncGenerator[CMRequestProxy, None]:
         """
         Async context manager wrapper around :meth:`fulfill_request()` which retrieves the response body,

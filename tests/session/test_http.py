@@ -1,19 +1,34 @@
 from __future__ import annotations
 
+import socket
 import ssl
+from operator import itemgetter
+from socket import AF_INET, AF_INET6
 from ssl import SSLContext
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, PropertyMock, call
 
+import freezegun
 import pytest
 import requests
 import requests_mock as rm
+import urllib3
 from requests.adapters import HTTPAdapter
+from urllib3.connection import HTTPConnection
 from urllib3.response import HTTPResponse
 
-from streamlink import Streamlink
 from streamlink.exceptions import PluginError, StreamlinkDeprecationWarning
 from streamlink.session.http import HTTPSession, SSLContextAdapter, TLSNoDHAdapter, TLSSecLevel1Adapter
 from streamlink.session.http_useragents import DEFAULT
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from streamlink import Streamlink
+
+
+_original_allowed_gai_family = urllib3.util.connection.allowed_gai_family  # type: ignore[attr-defined, ty:unresolved-attribute]
 
 
 class TestUrllib3Overrides:
@@ -22,76 +37,76 @@ class TestUrllib3Overrides:
         return HTTPSession()
 
     @pytest.mark.parametrize(
-        ("url", "expected", "assertion"),
+        ("url", "expected"),
         [
-            (
+            pytest.param(
                 "https://foo/bar%3F?baz%21",
                 "https://foo/bar%3F?baz%21",
-                "Keeps encoded reserved characters",
+                id="keep-encoded-reserved-characters",
             ),
-            (
+            pytest.param(
                 "https://foo/%62%61%72?%62%61%7A",
                 "https://foo/bar?baz",
-                "Decodes encoded unreserved characters",
+                id="decode-encoded-unreserved-characters",
             ),
-            (
+            pytest.param(
                 "https://foo/bär?bäz",
                 "https://foo/b%C3%A4r?b%C3%A4z",
-                "Encodes other characters",
+                id="encode-other-characters",
             ),
-            (
+            pytest.param(
                 "https://foo/b%c3%a4r?b%c3%a4z",
                 "https://foo/b%c3%a4r?b%c3%a4z",
-                "Keeps percent-encodings with lowercase characters",
+                id="keep-percent-encodings-with-lowercase-characters",
             ),
-            (
+            pytest.param(
                 "https://foo/b%C3%A4r?b%C3%A4z",
                 "https://foo/b%C3%A4r?b%C3%A4z",
-                "Keeps percent-encodings with uppercase characters",
+                id="keep-percent-encodings-with-uppercase-characters",
             ),
-            (
+            pytest.param(
                 "https://foo/%?%",
                 "https://foo/%25?%25",
-                "Empty percent-encodings without valid encodings",
+                id="empty-percent-encodings-without-valid-encodings",
             ),
-            (
+            pytest.param(
                 "https://foo/%0?%0",
                 "https://foo/%250?%250",
-                "Incomplete percent-encodings without valid encodings",
+                id="incomplete-percent-encodings-without-valid-encodings",
             ),
-            (
+            pytest.param(
                 "https://foo/%zz?%zz",
                 "https://foo/%25zz?%25zz",
-                "Invalid percent-encodings without valid encodings",
+                id="invalid-percent-encodings-without-valid-encodings",
             ),
-            (
+            pytest.param(
                 "https://foo/%3F%?%3F%",
                 "https://foo/%253F%25?%253F%25",
-                "Empty percent-encodings with valid encodings",
+                id="empty-percent-encodings-with-valid-encodings",
             ),
-            (
+            pytest.param(
                 "https://foo/%3F%0?%3F%0",
                 "https://foo/%253F%250?%253F%250",
-                "Incomplete percent-encodings with valid encodings",
+                id="incomplete-percent-encodings-with-valid-encodings",
             ),
-            (
+            pytest.param(
                 "https://foo/%3F%zz?%3F%zz",
                 "https://foo/%253F%25zz?%253F%25zz",
-                "Invalid percent-encodings with valid encodings",
+                id="invalid-percent-encodings-with-valid-encodings",
             ),
         ],
     )
-    def test_encode_invalid_chars(self, httpsession: HTTPSession, url: str, expected: str, assertion: str):
+    def test_encode_invalid_chars(self, httpsession: HTTPSession, url: str, expected: str):
         req = requests.Request(method="GET", url=url)
         prep = httpsession.prepare_request(req)
-        assert prep.url == expected, assertion
+        assert prep.url == expected
 
 
 class TestHTTPSession:
     def test_session_init(self):
         session = HTTPSession()
         assert session.headers.get("User-Agent") == DEFAULT
-        assert session.timeout == 20.0
+        assert session.timeout == 20.0  # noqa: RUF069
         assert "file://" in session.adapters.keys()
 
     def test_read_timeout(self, monkeypatch: pytest.MonkeyPatch):
@@ -219,6 +234,253 @@ class TestHTTPSession:
         res = getattr(httpsession, method)("http://mocked", encoding=encoding)
         assert res.encoding == expected
         assert res.text == "Bär"
+
+    # not defined in stdlib on Windows
+    SO_BINDTODEVICE = getattr(socket, "SO_BINDTODEVICE", 0)
+
+    @pytest.mark.parametrize(
+        ("interface", "source_address", "socket_options"),
+        [
+            pytest.param(
+                None,
+                None,
+                None,
+                id="none",
+            ),
+            pytest.param(
+                "",
+                None,
+                None,
+                id="empty",
+            ),
+            pytest.param(
+                "0.0.0.0",
+                ("0.0.0.0", 0),
+                None,
+                id="ipv4",
+            ),
+            pytest.param(
+                "::1",
+                ("::1", 0),
+                None,
+                id="ipv6",
+            ),
+            pytest.param(
+                "my-interface",
+                None,
+                [*HTTPConnection.default_socket_options, (socket.SOL_SOCKET, SO_BINDTODEVICE, b"my-interface")],
+                id="unix-iface",
+                marks=pytest.mark.posix_only,
+            ),
+            pytest.param(
+                "if!my-interface",
+                None,
+                [*HTTPConnection.default_socket_options, (socket.SOL_SOCKET, SO_BINDTODEVICE, b"my-interface")],
+                id="unix-iface-prefix",
+                marks=pytest.mark.posix_only,
+            ),
+            pytest.param(
+                "host!0.0.0.0",
+                ("0.0.0.0", 0),
+                None,
+                id="unix-host-prefix",
+                marks=pytest.mark.posix_only,
+            ),
+            pytest.param(
+                "host!foo",
+                ("foo", 0),
+                None,
+                id="unix-host-prefix-hostname",
+                marks=pytest.mark.posix_only,
+            ),
+            pytest.param(
+                "ifhost!my-interface!0.0.0.0",
+                ("0.0.0.0", 0),
+                [*HTTPConnection.default_socket_options, (socket.SOL_SOCKET, SO_BINDTODEVICE, b"my-interface")],
+                id="unix-ifhost-prefix",
+                marks=pytest.mark.posix_only,
+            ),
+            pytest.param(
+                "ifhost!my-interface",
+                None,
+                [*HTTPConnection.default_socket_options, (socket.SOL_SOCKET, SO_BINDTODEVICE, b"ifhost!my-interface")],
+                id="unix-ifhost-prefix-invalid",
+                marks=pytest.mark.posix_only,
+            ),
+            pytest.param(
+                "my-interface",
+                ("my-interface", 0),
+                None,
+                id="win32-iface",
+                marks=pytest.mark.windows_only,
+            ),
+            pytest.param(
+                "ifhost!my-interface!0.0.0.0",
+                ("ifhost!my-interface!0.0.0.0", 0),
+                None,
+                id="win32-prefix",
+                marks=pytest.mark.windows_only,
+            ),
+        ],
+    )
+    def test_set_interface(self, interface: str, source_address: tuple | None, socket_options: list[tuple] | None):
+        session = HTTPSession()
+        session.mount("custom://", TLSNoDHAdapter())
+
+        a_http, a_https, a_custom, a_file = itemgetter("http://", "https://", "custom://", "file://")(session.adapters)
+        assert isinstance(a_http, HTTPAdapter)
+        assert isinstance(a_https, HTTPAdapter)
+        assert isinstance(a_custom, HTTPAdapter)
+        assert not isinstance(a_file, HTTPAdapter)
+
+        for adapter in a_http, a_https, a_custom:
+            assert adapter.poolmanager.connection_pool_kw.get("source_address") is None
+            assert adapter.poolmanager.connection_pool_kw.get("socket_options") is None
+
+        session.set_interface(interface=interface)
+        for adapter in a_http, a_https, a_custom:
+            assert adapter.poolmanager.connection_pool_kw.get("source_address") == source_address
+            assert adapter.poolmanager.connection_pool_kw.get("socket_options") == socket_options
+
+        session.set_interface(interface="")
+        for adapter in a_http, a_https, a_custom:
+            assert adapter.poolmanager.connection_pool_kw.get("source_address") is None
+            assert adapter.poolmanager.connection_pool_kw.get("socket_options") is None
+
+        session.set_interface(interface=None)
+        for adapter in a_http, a_https, a_custom:
+            assert adapter.poolmanager.connection_pool_kw.get("source_address") is None
+            assert adapter.poolmanager.connection_pool_kw.get("socket_options") is None
+
+        # doesn't raise
+        session.set_interface(interface=None)
+
+    def test_set_address_family(self, monkeypatch: pytest.MonkeyPatch):
+        session = HTTPSession()
+        mock_urllib3_util_connection = Mock(allowed_gai_family=_original_allowed_gai_family)
+        monkeypatch.setattr("streamlink.session.http.urllib3_util_connection", mock_urllib3_util_connection)
+
+        assert mock_urllib3_util_connection.allowed_gai_family is _original_allowed_gai_family
+
+        session.set_address_family(family=AF_INET)
+        assert mock_urllib3_util_connection.allowed_gai_family is not _original_allowed_gai_family
+        assert mock_urllib3_util_connection.allowed_gai_family() is AF_INET
+
+        session.set_address_family(family=None)
+        assert mock_urllib3_util_connection.allowed_gai_family is _original_allowed_gai_family
+
+        session.set_address_family(family=AF_INET6)
+        assert mock_urllib3_util_connection.allowed_gai_family is not _original_allowed_gai_family
+        assert mock_urllib3_util_connection.allowed_gai_family() is AF_INET6
+
+        session.set_address_family(family=None)
+        assert mock_urllib3_util_connection.allowed_gai_family is _original_allowed_gai_family
+
+    def test_disable_dh(self):
+        session = HTTPSession()
+
+        assert isinstance(session.adapters["https://"], HTTPAdapter)
+        assert not isinstance(session.adapters["https://"], TLSNoDHAdapter)
+
+        assert not session.adapters["https://"].poolmanager.connection_pool_kw.get("source_address")
+        session.adapters["https://"].poolmanager.connection_pool_kw.update(source_address=("0.0.0.0", 0))
+
+        session.disable_dh(disable=True)
+        assert isinstance(session.adapters["https://"], TLSNoDHAdapter)
+        assert session.adapters["https://"].poolmanager.connection_pool_kw.get("source_address") == ("0.0.0.0", 0)
+
+        session.disable_dh(disable=False)
+        assert isinstance(session.adapters["https://"], HTTPAdapter)
+        assert not isinstance(session.adapters["https://"], TLSNoDHAdapter)
+        assert session.adapters["https://"].poolmanager.connection_pool_kw.get("source_address") == ("0.0.0.0", 0)
+
+
+class TestHTTPCookies:
+    def test_invalid_file(self, tmp_path: Path):
+        session = HTTPSession()
+        cookies_file = tmp_path / "invalid-file"
+        with pytest.raises(FileNotFoundError, match=r" is not a valid cookies file path$"):
+            session.set_cookies_from_file(cookies_file)
+        assert session.cookies == {}
+
+    def test_invalid_format(self, tmp_path: Path):
+        session = HTTPSession()
+        cookies_file = tmp_path / "invalid-file"
+        cookies_file.write_text("""foo\nbar\n""")
+        with pytest.raises(Exception, match=r" does not look like a Netscape format cookies file$"):
+            session.set_cookies_from_file(cookies_file)
+        assert session.cookies == {}
+
+    @freezegun.freeze_time("2000-01-01T00:00:00Z")
+    def test_cookies(self, tmp_path: Path, requests_mock: rm.Mocker):
+        session = HTTPSession()
+        cookies_file = tmp_path / "cookies.txt"
+        content = "".join([
+            "# Netscape HTTP Cookie File\n",
+            "host.local	FALSE	/a	FALSE	946684801	foo	bar\n",
+            "host.local	FALSE	/b	FALSE	946684801	baz	qux\n",
+            "host.local	FALSE	/	FALSE	946684799	expired	1\n",
+            ".host.tld	TRUE	/	TRUE	946684801	abc	def\n",
+        ])
+        cookies_file.write_text(content)
+        session.set_cookies_from_file(cookies_file)
+        assert session.cookies.get_dict(domain="host.local") == {
+            "foo": "bar",
+            "baz": "qux",
+        }
+        assert session.cookies.get_dict(domain="host.local", path="/a") == {
+            "foo": "bar",
+        }
+        assert session.cookies.get_dict(domain=".host.tld") == {
+            "abc": "def",
+        }
+
+        matcher = requests_mock.register_uri(rm.ANY, rm.ANY, status_code=200)
+
+        # domain, path, expired
+        assert session.get("http://host.local/a").status_code == 200
+        assert matcher.request_history[-1]._request.headers.get("cookie") == "foo=bar"
+        assert session.get("http://host.local/b").status_code == 200
+        assert matcher.request_history[-1]._request.headers.get("cookie") == "baz=qux"
+        assert session.get("http://foo.host.local/").status_code == 200
+        assert matcher.request_history[-1]._request.headers.get("cookie") is None
+
+        # subdomain, secure
+        assert session.get("https://sub.host.tld/").status_code == 200
+        assert matcher.request_history[-1]._request.headers.get("cookie") == "abc=def"
+        assert session.get("http://sub.host.tld/").status_code == 200
+        assert matcher.request_history[-1]._request.headers.get("cookie") is None
+
+    @freezegun.freeze_time("2000-01-01T00:00:00Z")
+    def test_cookies_override(self, tmp_path: Path):
+        session = HTTPSession()
+        file_a = tmp_path / "a"
+        file_b = tmp_path / "b"
+        file_a.write_text(
+            "".join([
+                "# Netscape HTTP Cookie File\n",
+                "host.local	FALSE	/	FALSE	946684801	foo	bar\n",
+                "host.local	FALSE	/	FALSE	946684801	abc	def\n",
+            ]),
+        )
+        file_b.write_text(
+            "".join([
+                "# Netscape HTTP Cookie File\n",
+                "host.local	FALSE	/	FALSE	946684801	foo	baz\n",
+            ]),
+        )
+
+        assert session.cookies.get_dict(domain="host.local") == {}
+        session.set_cookies_from_file(file_a)
+        assert session.cookies.get_dict(domain="host.local") == {
+            "foo": "bar",
+            "abc": "def",
+        }
+        session.set_cookies_from_file(file_b)
+        assert session.cookies.get_dict(domain="host.local") == {
+            "foo": "baz",
+            "abc": "def",
+        }
 
 
 class TestHTTPAdapters:

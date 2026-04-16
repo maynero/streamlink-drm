@@ -1,27 +1,29 @@
 from __future__ import annotations
 
-import logging
 import queue
-from collections.abc import Generator
 from concurrent import futures
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from threading import Event, current_thread
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeAlias, TypeVar
 
 from streamlink.buffers import RingBuffer
+from streamlink.logger import getLogger
 from streamlink.stream.segmented.segment import Segment
-from streamlink.stream.stream import Stream, StreamIO
+from streamlink.stream.stream import StreamIO
 from streamlink.utils.thread import NamedThread
+from streamlink.utils.times import now
 
 
 if TYPE_CHECKING:
-    try:
-        from typing import TypeAlias  # type: ignore[attr-defined]
-    except ImportError:
-        from typing_extensions import TypeAlias
+    from collections.abc import Generator
+    from concurrent.futures import Future
+    from datetime import datetime
+
+    from streamlink.stream.stream import Stream
 
 
-log = logging.getLogger(".".join(__name__.split(".")[:-1]))
+log = getLogger(".".join(__name__.split(".")[:-1]))
 
 
 class AwaitableMixin:
@@ -39,8 +41,10 @@ class AwaitableMixin:
 
 TSegment = TypeVar("TSegment", bound=Segment)
 TResult = TypeVar("TResult")
-TResultFuture: TypeAlias = "Future[TResult | None]"
-TQueueItem: TypeAlias = "tuple[TSegment, TResultFuture, tuple]"
+
+if TYPE_CHECKING:
+    TResultFuture: TypeAlias = Future[TResult | None]
+    TQueueItem: TypeAlias = tuple[TSegment, TResultFuture, tuple]
 
 
 class SegmentedStreamWriter(AwaitableMixin, NamedThread, Generic[TSegment, TResult]):
@@ -74,7 +78,7 @@ class SegmentedStreamWriter(AwaitableMixin, NamedThread, Generic[TSegment, TResu
         self.timeout = timeout or self.session.options.get("stream-segment-timeout")
 
         self.executor = ThreadPoolExecutor(max_workers=self.threads, thread_name_prefix=f"{self.name}-executor")
-        self._queue: queue.Queue[TQueueItem] = queue.Queue(size)
+        self._queue: queue.Queue[TQueueItem | None] = queue.Queue(size)
 
     def close(self) -> None:
         """
@@ -121,10 +125,10 @@ class SegmentedStreamWriter(AwaitableMixin, NamedThread, Generic[TSegment, TResu
             except queue.Full:  # pragma: no cover
                 continue
 
-    def _queue_put(self, item: TQueueItem) -> None:
+    def _queue_put(self, item: TQueueItem | None) -> None:
         self._queue.put(item, block=True, timeout=1)
 
-    def _queue_get(self) -> TQueueItem:
+    def _queue_get(self) -> TQueueItem | None:
         return self._queue.get(block=True, timeout=0.5)
 
     @staticmethod
@@ -181,6 +185,8 @@ class SegmentedStreamWorker(AwaitableMixin, NamedThread, Generic[TSegment, TResu
     writer: SegmentedStreamWriter[TSegment, TResult]
     stream: Stream
 
+    _QUEUE_DEADLINE_MIN = 5.0
+
     def __init__(self, reader: SegmentedStreamReader, name: str | None = None, **kwargs) -> None:
         super().__init__(daemon=True, name=name)
 
@@ -190,6 +196,13 @@ class SegmentedStreamWorker(AwaitableMixin, NamedThread, Generic[TSegment, TResu
         self.writer = reader.writer
         self.stream = reader.stream
         self.session = reader.session
+
+        self.sequence: int = -1
+        self.duration: float = 0.0
+        self.duration_limit: float = self.session.options.get("stream-segmented-duration")
+
+        self._queue_deadline_factor: float = self.session.options.get("stream-segmented-queue-deadline")
+        self._queue_last: datetime = now()
 
     def close(self) -> None:
         """
@@ -204,21 +217,88 @@ class SegmentedStreamWorker(AwaitableMixin, NamedThread, Generic[TSegment, TResu
         self.closed = True
         self._wait.set()
 
-    def iter_segments(self) -> Generator[TSegment, None, None]:
+    @property
+    def _queue_deadline_wait(self) -> float:  # pragma: no cover
+        """
+        The max time in seconds to wait for new segments while fetching data in a polling implementation.
+        Will be multiplied by the ``stream-segmented-queue-deadline`` session option in the queue deadline check.
+        Needs to be overridden by subclasses which intent to support queue deadlines.
+        """
+        return 0.0
+
+    def check_queue_deadline(self, queued: bool) -> bool:
+        """
+        Check whether new segments were queued in a specific time frame during the current iteration of resource fetching,
+        so the stream can be stopped early. Should be called in a subclass's ``iter_segments()`` after fetching data.
+        :return: True if the stream should be stopped early, False otherwise.
+        """
+
+        if queued:
+            self._queue_last = now()
+            return False
+
+        deadline = max(0.0, self._queue_deadline_wait) * self._queue_deadline_factor
+        if deadline <= 0.0:
+            return False
+
+        deadline = max(self._QUEUE_DEADLINE_MIN, deadline)
+        if now() <= self._queue_last + timedelta(seconds=deadline):
+            return False
+
+        log.warning(f"No new segments for more than {deadline:.2f}s. Stopping...")
+        return True
+
+    def check_sequence_gap(self, segment: TSegment) -> None:
+        size = segment.num - self.sequence
+        if size > 0:
+            if size > 1:
+                msg = f"Sequence gap of {size} segments at position {self.sequence}. "
+            else:
+                msg = f"Sequence gap of 1 segment at position {self.sequence}. "
+            warning = "This is unsupported and will result in incoherent output data."
+            log.warning(f"{msg}{warning}")
+
+    def iter_segments(self) -> Generator[TSegment, bool, None]:
         """
         The iterator that generates segments for the worker thread.
         Should be overridden by the inheriting class.
         """
 
         return
-        # noinspection PyUnreachableCode
-        yield
+        # noinspection PyUnreachableCode,PyTypeChecker
+        yield  # type: ignore[ty:invalid-yield]
 
     def run(self) -> None:
-        for segment in self.iter_segments():
-            if self.closed:  # pragma: no cover
-                break
-            self.writer.put(segment)
+        self._queue_last = now()
+
+        iter_segments = self.iter_segments()
+        queued: bool | None = None
+
+        try:
+            while True:
+                if queued is None:
+                    segment = next(iter_segments)
+                else:
+                    segment = iter_segments.send(queued)
+
+                if self.closed:  # pragma: no cover
+                    break
+
+                log.debug("Queuing %r", segment)
+
+                self.check_sequence_gap(segment)
+
+                self.sequence = segment.num + 1
+                self.duration += segment.duration
+
+                self.writer.put(segment)
+                queued = True
+
+                if self.duration >= self.duration_limit > 0.0:
+                    log.info(f"Stopping stream early after {self.duration_limit:.2f}s")
+                    break
+        except StopIteration:
+            pass
 
         # End of stream, tells the writer to exit
         self.writer.put(None)

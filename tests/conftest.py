@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Callable, Mapping
 from functools import partial
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import requests_mock as rm
@@ -13,6 +12,10 @@ from streamlink.session import Streamlink
 
 # noinspection PyProtectedMember
 from streamlink.utils.thread import _threadname_counters  # noqa: PLC2701
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 
 _TEST_CONDITION_MARKERS: Mapping[str, tuple[bool, str] | Callable[[Any], tuple[bool, str]]] = {
@@ -72,6 +75,7 @@ def _check_test_condition(item: pytest.Item):  # pragma: no cover
         kwargs = dict(m.kwargs)
         reason = kwargs.pop("reason", None)
         if callable(data):
+            assert not isinstance(data, tuple)
             cond, msg = data(*m.args, **kwargs)
         else:
             cond, msg = data
@@ -133,7 +137,7 @@ def _patch_trio_run():
     # `strict_exception_groups` changed from False to True in `trio==0.25`:
     # Patch `trio.run()` and make older versions of trio behave like `trio>=0.25`
     # as pytest-trio doesn't allow setting custom `trio.run()` args/kwargs
-    trio.run = partial(trio.run, strict_exception_groups=True)
+    trio.run = partial(trio.run, strict_exception_groups=True)  # type: ignore
     yield
     trio.run = trio_run
 

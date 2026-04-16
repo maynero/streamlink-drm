@@ -8,13 +8,13 @@ $region Spain
 
 from __future__ import annotations
 
-import logging
 import re
 from base64 import b64decode
-from collections.abc import Iterator, Sequence
 from io import BytesIO
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, PluginError, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.ffmpegmux import MuxedStream
@@ -23,7 +23,11 @@ from streamlink.stream.http import HTTPStream
 from streamlink.utils.url import update_scheme
 
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+
+log = getLogger(__name__)
 
 
 class Base64Reader:
@@ -142,9 +146,9 @@ class Rtve(Plugin):
         self.id = self.session.http.get(
             self.url,
             schema=validate.Schema(
-                re.compile(r"\bdata-setup='({.+?})'", re.DOTALL),
+                validate.parse_html(),
+                validate.xml_xpath_string(".//*[contains(@class,'videoPlayer')][@data-setup][1]/@data-setup"),
                 validate.none_or_all(
-                    validate.get(1),
                     validate.parse_json(),
                     {
                         "idAsset": validate.any(int, validate.all(str, validate.transform(int))),

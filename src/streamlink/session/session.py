@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import logging
 import warnings
-from collections.abc import Mapping
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import streamlink.compat  # noqa: F401
 from streamlink import __version__
 from streamlink.exceptions import NoPluginError, PluginError, StreamlinkDeprecationWarning
-from streamlink.logger import StreamlinkLogger
-from streamlink.options import Options
-from streamlink.plugin.plugin import Plugin
+from streamlink.logger import getLogger
 from streamlink.session.http import HTTPSession
 from streamlink.session.options import StreamlinkOptions
 from streamlink.session.plugins import StreamlinkPlugins
@@ -19,9 +15,14 @@ from streamlink.utils.l10n import Localization
 from streamlink.utils.url import update_scheme
 
 
-# Ensure that the Logger class returned is Streamslink's for using the API (for backwards compatibility)
-logging.setLoggerClass(StreamlinkLogger)
-log = logging.getLogger(".".join(__name__.split(".")[:-1]))
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from streamlink.options import Options
+    from streamlink.plugin.plugin import Plugin
+
+
+log = getLogger(".".join(__name__.split(".")[:-1]))
 
 
 class Streamlink:
@@ -110,7 +111,7 @@ class Streamlink:
         if follow_redirect:
             # Attempt to handle a redirect URL
             try:
-                res = self.http.head(url, allow_redirects=True, acceptable_status=[501])  # type: ignore[call-arg]
+                res = self.http.head(url, allow_redirects=True, acceptable_status=[501])
 
                 # Fall back to GET request if server doesn't handle HEAD.
                 if res.status_code == 501:

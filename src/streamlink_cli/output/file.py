@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from streamlink.compat import is_win32
 from streamlink_cli.compat import stdout
@@ -10,10 +9,16 @@ from streamlink_cli.output.abc import Output
 
 if is_win32:
     import msvcrt
-    from os import O_BINARY  # type: ignore[attr-defined]
+    import os
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class FileOutput(Output):
+    fd: BinaryIO
+
     def __init__(
         self,
         filename: Path | None = None,
@@ -22,7 +27,7 @@ class FileOutput(Output):
     ):
         super().__init__()
         self.filename = filename
-        self.fd = fd
+        self.fd = fd  # type: ignore[assignment, ty:invalid-assignment]
         self.record = record
 
     def _open(self):
@@ -34,7 +39,7 @@ class FileOutput(Output):
             self.record.open()
 
         if is_win32:
-            msvcrt.setmode(self.fd.fileno(), O_BINARY)
+            msvcrt.setmode(self.fd.fileno(), os.O_BINARY)
 
     def _close(self):
         if self.fd is not stdout:

@@ -296,8 +296,12 @@ details.sd-dropdown .sd-summary-content {
   Content
 */
 
+.acknowledgements img {
+  max-width: 8rem;
+}
+
 .installation-grid .fab {
-  font-size: 5em;
+  font-size: clamp(1rem, 10vw, 5rem);
 }
 
 .grid-with-icons .sd-card-header .fas {

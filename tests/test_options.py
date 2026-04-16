@@ -37,8 +37,8 @@ class TestOptions:
         assert options["non_existing"] is None
 
         options.set("abc-def", 3.14)
-        assert options.get("abc-def") == 3.14
-        assert options.get("abc-def") == 3.14
+        assert options.get("abc-def") == 3.14  # noqa: RUF069
+        assert options.get("abc-def") == 3.14  # noqa: RUF069
 
         obj = object()
         options["foo_bar"] = obj
@@ -169,7 +169,7 @@ class TestArgument:
         assert arg.default == 123
         with pytest.raises(AttributeError):
             # noinspection PyPropertyAccess
-            arg.default = 456
+            arg.default = 456  # type: ignore
 
     def test_help_suppress(self):
         argA = Argument("test", help="test")

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from typing import TYPE_CHECKING
 
-import pytest
-
-from streamlink.plugin.plugin import Matcher
 from tests.plugins import PluginCanHandleUrl
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import pytest
+
+    from streamlink.plugin.plugin import Matcher
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]):  # pragma: no cover
@@ -29,6 +34,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc):
 
 
 def _parametrize_plugincanhandleurl_test_all_matchers_match(metafunc: pytest.Metafunc):
+    assert metafunc.cls
     matchers: list[tuple[int, Matcher]] = list(enumerate(metafunc.cls.matchers()))
     metafunc.parametrize(
         "matcher",
@@ -38,6 +44,7 @@ def _parametrize_plugincanhandleurl_test_all_matchers_match(metafunc: pytest.Met
 
 
 def _parametrize_plugincanhandleurl_test_all_named_matchers_have_tests(metafunc: pytest.Metafunc):
+    assert metafunc.cls
     matchers: list[Matcher] = [m for m in metafunc.cls.matchers() if m.name is not None]
     metafunc.parametrize(
         "matcher",
@@ -47,6 +54,7 @@ def _parametrize_plugincanhandleurl_test_all_named_matchers_have_tests(metafunc:
 
 
 def _parametrize_plugincanhandleurl_test_url_matches_positive_unnamed(metafunc: pytest.Metafunc):
+    assert metafunc.cls
     metafunc.parametrize(
         "url",
         metafunc.cls.urls_unnamed(),
@@ -54,6 +62,7 @@ def _parametrize_plugincanhandleurl_test_url_matches_positive_unnamed(metafunc: 
 
 
 def _parametrize_plugincanhandleurl_test_url_matches_positive_named(metafunc: pytest.Metafunc):
+    assert metafunc.cls
     urls = metafunc.cls.urls_named()
     metafunc.parametrize(
         "name,url",
@@ -63,6 +72,7 @@ def _parametrize_plugincanhandleurl_test_url_matches_positive_named(metafunc: py
 
 
 def _parametrize_plugincanhandleurl_test_url_matches_groups_unnamed(metafunc: pytest.Metafunc):
+    assert metafunc.cls
     urlgroups = metafunc.cls.urlgroups_unnamed()
     metafunc.parametrize(
         "url,groups",
@@ -72,6 +82,7 @@ def _parametrize_plugincanhandleurl_test_url_matches_groups_unnamed(metafunc: py
 
 
 def _parametrize_plugincanhandleurl_test_url_matches_groups_named(metafunc: pytest.Metafunc):
+    assert metafunc.cls
     urlgroups = metafunc.cls.urlgroups_named()
     metafunc.parametrize(
         "name,url,groups",
@@ -81,6 +92,7 @@ def _parametrize_plugincanhandleurl_test_url_matches_groups_named(metafunc: pyte
 
 
 def _parametrize_plugincanhandleurl_test_url_matches_negative(metafunc: pytest.Metafunc):
+    assert metafunc.cls
     metafunc.parametrize(
         "url",
         metafunc.cls.urls_negative(),

@@ -5,14 +5,17 @@ import sys
 # noinspection PyProtectedMember
 from ctypes import Structure, _SimpleCData  # noqa: PLC2701
 from ctypes.wintypes import DWORD, WCHAR, WORD
-from io import TextIOWrapper
 from types import ModuleType
-from typing import ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 from unittest.mock import ANY, Mock, call
 
 import pytest
 
 from streamlink_cli.console.windows import COORD, WindowsConsole
+
+
+if TYPE_CHECKING:
+    from io import TextIOWrapper
 
 
 _TCTypesType = TypeVar("_TCTypesType")
@@ -46,7 +49,7 @@ class EqSimpleCData(_CTypesComparable[_SimpleCData]):
 
     def _get_data(self, data: _SimpleCData) -> tuple:
         # noinspection PyProtectedMember
-        return data._type_, data.value  # type: ignore[attr-defined]
+        return data._type_, data.value  # type: ignore[attr-defined, ty:unresolved-attribute]
 
 
 class EqStructure(_CTypesComparable[Structure]):
@@ -98,7 +101,7 @@ def test_call_success_error(monkeypatch: pytest.MonkeyPatch, mock_windll: Mock):
     mock_windll.kernel32.GetLastError.return_value = 87
 
     with pytest.raises(OSError) as exc_info:  # noqa: PT011
-        windows_console.set_console_cursor_position(123, 456)
+        windows_console.set_console_cursor_position(123, 456)  # type: ignore[arg-type, ty:invalid-argument-type]
     assert str(exc_info.value) == "Error while calling kernel32.SetConsoleCursorPosition (last_error=0x57)"
 
 

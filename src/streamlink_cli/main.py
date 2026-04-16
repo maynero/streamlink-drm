@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import importlib.metadata
 import logging
 import os
@@ -11,22 +10,19 @@ import ssl
 import sys
 import warnings
 from atexit import register as _atexit_register
-from collections.abc import Mapping
 from contextlib import closing, suppress
 from gettext import gettext
 from pathlib import Path
 from time import sleep
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import streamlink.logger as logger
 from streamlink import NoPluginError, PluginError, StreamError, Streamlink, __version__ as streamlink_version
 from streamlink.exceptions import FatalPluginError, StreamlinkDeprecationWarning
-from streamlink.plugin import Plugin
-from streamlink.stream.stream import Stream, StreamIO
+from streamlink.logger import getLogger
 from streamlink.utils.named_pipe import NamedPipe
 from streamlink.utils.times import LOCAL as LOCALTIMEZONE
 from streamlink_cli.argparser import (
-    ArgumentParser,
     build_parser,
     setup_plugin_args,
     setup_plugin_options,
@@ -51,17 +47,26 @@ from streamlink_cli.utils import Formatter, datetime
 from streamlink_cli.utils.versioncheck import check_version
 
 
+if TYPE_CHECKING:
+    import argparse
+    from collections.abc import Mapping
+
+    from streamlink.plugin import Plugin
+    from streamlink.stream.stream import Stream, StreamIO
+    from streamlink_cli.argparser import ArgumentParser
+
+
 QUIET_OPTIONS = ("json", "stream_url", "quiet")
 
 
-args: Any = None  # type: ignore[assignment]
-console: ConsoleOutput = None  # type: ignore[assignment]
-output: FileOutput | PlayerOutput = None  # type: ignore[assignment]
-stream_fd: StreamIO = None  # type: ignore[assignment]
-streamlink: Streamlink = None  # type: ignore[assignment]
+args: argparse.Namespace = None  # type: ignore[assignment, ty:invalid-assignment]
+console: ConsoleOutput = None  # type: ignore[assignment, ty:invalid-assignment]
+output: FileOutput | PlayerOutput = None  # type: ignore[assignment, ty:invalid-assignment]
+stream_fd: StreamIO = None  # type: ignore[assignment, ty:invalid-assignment]
+streamlink: Streamlink = None  # type: ignore[assignment, ty:invalid-assignment]
 
 
-log = logging.getLogger("streamlink.cli")
+log = getLogger("streamlink.cli")
 
 
 def get_formatter(plugin: Plugin):
@@ -87,9 +92,7 @@ def check_file_output(path: Path, skip: bool, force: bool) -> Path:
     Checks if `path` already exists and asks the user if it should be overwritten if it does.
     """
 
-    # rewrap `path` and resolve using `os.path.realpath` instead of `path.resolve()`
-    # to avoid a pathlib issues on py39 and below
-    realpath = Path(os.path.realpath(path))
+    realpath = path.resolve()
 
     log.info(f"Writing output to\n{realpath}")
     log.debug("Checking file output")
@@ -158,7 +161,7 @@ def create_output(formatter: Formatter) -> FileOutput | PlayerOutput:
 
         if args.player_fifo:
             try:
-                namedpipe = NamedPipe()  # type: ignore[abstract]  # ???
+                namedpipe = NamedPipe()
             except OSError as err:
                 raise StreamlinkCLIError(f"Failed to create pipe: {err}") from err
         elif args.player_http:
@@ -981,7 +984,10 @@ def setup(parser: ArgumentParser) -> None:
     log_current_versions()
     log_current_arguments(streamlink, parser)
 
-    setup_session_options(streamlink, args)
+    try:
+        setup_session_options(streamlink, args)
+    except Exception as err:
+        raise StreamlinkCLIError from err
 
     setup_signals()
 

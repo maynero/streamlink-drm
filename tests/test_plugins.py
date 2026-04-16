@@ -8,6 +8,7 @@ import pytest
 
 import streamlink.plugins
 import tests.plugins
+from streamlink.logger import StreamlinkLogger
 from streamlink.plugin.plugin import Matcher, Plugin
 from streamlink.utils.module import exec_module
 
@@ -53,7 +54,7 @@ def unique(iterable):
 
 
 class TestPlugins:
-    @pytest.fixture(scope="class", params=plugin_modules)
+    @pytest.fixture(scope="class", params=plugin_modules, ids=[moduleinfo.name for moduleinfo in plugin_modules])
     def plugin(self, request):
         return exec_module(request.param.module_finder, f"streamlink.plugins.{request.param.name}")
 
@@ -90,6 +91,13 @@ class TestPlugins:
         assert not hasattr(pluginclass, "can_handle_url"), "Does not implement deprecated can_handle_url(url)"
         assert not hasattr(pluginclass, "priority"), "Does not implement deprecated priority(url)"
         assert callable(pluginclass._get_streams), "Implements _get_streams()"
+
+    def test_logger(self, plugin):
+        logger = getattr(plugin, "log", None) or getattr(plugin, "logger", None)
+        if logger is None:  # pragma: no cover
+            return
+        assert isinstance(logger, StreamlinkLogger)
+        assert logger.name == plugin.__name__
 
 
 class TestPluginTests:
@@ -151,7 +159,7 @@ class TestPluginMetadata:
         return tokeninfo
 
     @pytest.fixture(scope="class")
-    def metadata_items(self, tokeninfo):
+    def metadata_items(self, tokeninfo: tokenize.TokenInfo):
         match = re.search(r"^\"\"\"\n(?P<metadata>.+)\n\"\"\"$", tokeninfo.string, re.DOTALL)
         assert match is not None, "String is a properly formatted long string"
 
@@ -161,7 +169,7 @@ class TestPluginMetadata:
         ]  # fmt: skip
         assert all(lines), "All lines are properly formatted using the '$key value' format"
 
-        return [(match.group("key"), match.group("value")) for match in lines]
+        return [(m.group("key"), m.group("value")) for m in lines if m]
 
     @pytest.fixture(scope="class")
     def metadata_keys(self, metadata_items):

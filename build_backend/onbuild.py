@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
+
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 
 try:
-    # noinspection PyProtectedMember
-    from versioningit.onbuild import SetuptoolsFileProvider  # type: ignore[attr-defined]
+    from versioningit.onbuild import SetuptoolsFileProvider
 except ImportError:  # pragma: no cover
 
     @dataclass

@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import re
 import time
 from contextlib import nullcontext
 from operator import eq, gt, lt
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock, call, patch
 
 import freezegun
 import pytest
 import requests.cookies
 
-from streamlink.options import Options
+from streamlink.logger import StreamlinkLogger
+from streamlink.options import Argument, Options
 from streamlink.plugin import (
     HIGH_PRIORITY,
     NORMAL_PRIORITY,
@@ -33,7 +33,10 @@ from streamlink.plugin.plugin import (
     parse_params,
     stream_weight,
 )
-from streamlink.session import Streamlink
+
+
+if TYPE_CHECKING:
+    from streamlink.session import Streamlink
 
 
 class FakePlugin(Plugin):
@@ -59,11 +62,10 @@ class TestPlugin:
     @pytest.mark.parametrize(
         ("pluginclass", "module", "logger"),
         [
-            (Plugin, "plugin", "streamlink.plugin.plugin"),
-            (FakePlugin, "test_plugin", "tests.test_plugin"),
-            (RenamedPlugin, "baz", "foo.bar.baz"),
-            (CustomConstructorOnePlugin, "test_plugin", "tests.test_plugin"),
-            (CustomConstructorTwoPlugin, "test_plugin", "tests.test_plugin"),
+            (FakePlugin, "test_plugin", "streamlink.tests.test_plugin"),
+            (RenamedPlugin, "baz", "streamlink.foo.bar.baz"),
+            (CustomConstructorOnePlugin, "test_plugin", "streamlink.tests.test_plugin"),
+            (CustomConstructorTwoPlugin, "test_plugin", "streamlink.tests.test_plugin"),
         ],
     )
     def test_constructor(
@@ -89,7 +91,7 @@ class TestPlugin:
 
         assert plugin.module == module
 
-        assert isinstance(plugin.logger, logging.Logger)
+        assert isinstance(plugin.logger, StreamlinkLogger)
         assert plugin.logger.name == logger
 
         assert mock_cache.call_args_list == [call(filename="plugin-cache.json", key_prefix=module, disabled=False)]
@@ -128,8 +130,7 @@ class TestPluginMatcher:
             pass
 
         with pytest.raises(TypeError) as cm:
-            # noinspection PyTypeChecker
-            pluginmatcher(re.compile(r""))(MyPlugin)
+            pluginmatcher(re.compile(r""))(MyPlugin)  # type: ignore
 
         assert str(cm.value) == "MyPlugin is not a Plugin"
 
@@ -166,6 +167,7 @@ class TestPluginMatcher:
             Matcher(re.compile(r"baz"), HIGH_PRIORITY, "baz"),
         ]
 
+    # noinspection PyAbstractClass
     def test_matchers_inheritance(self):
         @pluginmatcher(re.compile(r"foo"))
         @pluginmatcher(re.compile(r"bar"))
@@ -189,7 +191,7 @@ class TestPluginMatcher:
             Matcher(re.compile(r"bar"), NORMAL_PRIORITY),
         ]
 
-    # noinspection PyUnusedLocal
+    # noinspection PyUnusedLocal,PyAbstractClass
     def test_matchers_inheritance_named_duplicate(self):
         @pluginmatcher(name="foo", pattern=re.compile(r"foo"))
         class PluginOne(FakePlugin):
@@ -224,21 +226,25 @@ class TestPluginMatcher:
         assert plugin.url == "http://foo"
         assert [m is not None for m in plugin.matches] == [True, False, False]
         assert plugin.matcher is plugin.matchers[0].pattern
+        assert plugin.match is not None
         assert plugin.match.group(1) == "foo"
 
         plugin.url = "http://bar"
         assert plugin.url == "http://bar"
         assert [m is not None for m in plugin.matches] == [False, True, False]
         assert plugin.matcher is plugin.matchers[1].pattern
+        assert plugin.match is not None
         assert plugin.match.group(1) == "bar"
 
         plugin.url = "http://baz"
         assert plugin.url == "http://baz"
         assert [m is not None for m in plugin.matches] == [False, False, True]
         assert plugin.matcher is plugin.matchers[2].pattern
+        assert plugin.match is not None
         assert plugin.match.group(1) == "baz"
 
-        plugin.url = "http://qux"
+        with pytest.raises(PluginError, match=r"^The input URL did not match any of this plugin's matchers$"):
+            plugin.url = "http://qux"
         assert plugin.url == "http://qux"
         assert [m is not None for m in plugin.matches] == [False, False, False]
         assert plugin.matcher is None
@@ -272,7 +278,8 @@ class TestPluginMatcher:
         assert plugin.matches["foo"] is None
         assert plugin.matches["bar"] is not None
 
-        plugin.url = "http://baz"
+        with pytest.raises(PluginError, match=r"^The input URL did not match any of this plugin's matchers$"):
+            plugin.url = "http://baz"
         assert plugin.matches["foo"] is None
         assert plugin.matches["bar"] is None
 
@@ -296,11 +303,14 @@ class TestPluginArguments:
         assert all(callable(value) for value in _PLUGINARGUMENT_TYPE_REGISTRY.values())
 
     @pytest.mark.parametrize("pluginclass", [DecoratedPlugin, ClassAttrPlugin])
-    def test_arguments(self, pluginclass):
+    def test_arguments(self, pluginclass: type[Plugin]):
         assert pluginclass.arguments is not None
         assert tuple(arg.name for arg in pluginclass.arguments) == ("foo", "bar", "baz"), "Argument name"
         assert tuple(arg.dest for arg in pluginclass.arguments) == ("_foo", "_bar", "_baz"), "Argument keyword"
         assert tuple(arg.options.get("help") for arg in pluginclass.arguments) == ("FOO", "BAR", "BAZ"), "argparse keyword"
+        assert isinstance(pluginclass.get_argument("foo"), Argument)
+        assert pluginclass.get_argument("doesnotexist") is None
+        assert Plugin.get_argument("no-arguments") is None
 
     @pytest.mark.parametrize("pluginclass", [DecoratedPlugin, ClassAttrPlugin])
     def test_arguments_mixed(self, pluginclass):
@@ -408,7 +418,7 @@ class TestPluginArguments:
 
         with pytest.raises(TypeError, match=r"^NotAPlugin is not a Plugin$"):
             # noinspection PyUnusedLocal
-            @pluginargument("foo")  # type: ignore[arg-type]
+            @pluginargument("foo")  # type: ignore[arg-type, ty:invalid-argument-type]
             class NotAPlugin(metaclass=NotAPluginMeta):
                 pass
 
@@ -456,9 +466,6 @@ class TestCookies:
             rfc2109=False,
         )
 
-    # TODO: py39 support end: remove explicit dummy context binding of static method
-    _create_cookie_dict = create_cookie_dict.__get__(object)
-
     @pytest.fixture()
     def pluginclass(self):
         class MyPlugin(FakePlugin):
@@ -474,9 +481,10 @@ class TestCookies:
             yield cache
 
     @pytest.fixture()
-    def logger(self, pluginclass: type[Plugin]):
-        with patch("streamlink.plugin.plugin.logging") as mock_logging:
-            yield mock_logging.getLogger(pluginclass.__module__)
+    def logger(self, monkeypatch: pytest.MonkeyPatch, pluginclass: type[Plugin]):
+        mock_getlogger = Mock()
+        monkeypatch.setattr("streamlink.plugin.plugin.getLogger", mock_getlogger)
+        return mock_getlogger(pluginclass.__module__)
 
     @pytest.fixture()
     def plugin(self, pluginclass: type[Plugin], session: Streamlink, plugincache: Mock, logger: Mock):
@@ -498,8 +506,8 @@ class TestCookies:
         "plugincache",
         [
             {
-                "__cookie:test-name1:test.se:80:/": _create_cookie_dict("test-name1", "test-value1"),
-                "__cookie:test-name2:test.se:80:/": _create_cookie_dict("test-name2", "test-value2"),
+                "__cookie:test-name1:test.se:80:/": create_cookie_dict("test-name1", "test-value1"),
+                "__cookie:test-name2:test.se:80:/": create_cookie_dict("test-name2", "test-value2"),
                 "unrelated": "data",
             },
         ],
@@ -554,8 +562,8 @@ class TestCookies:
         "plugincache",
         [
             {
-                "__cookie:test-name1:test.se:80:/": _create_cookie_dict("test-name1", "test-value1", None),
-                "__cookie:test-name2:test.se:80:/": _create_cookie_dict("test-name2", "test-value2", None),
+                "__cookie:test-name1:test.se:80:/": create_cookie_dict("test-name1", "test-value1", None),
+                "__cookie:test-name2:test.se:80:/": create_cookie_dict("test-name2", "test-value2", None),
                 "unrelated": "data",
             },
         ],
@@ -573,8 +581,8 @@ class TestCookies:
         "plugincache",
         [
             {
-                "__cookie:test-name1:test.se:80:/": _create_cookie_dict("test-name1", "test-value1", None),
-                "__cookie:test-name2:test.se:80:/": _create_cookie_dict("test-name2", "test-value2", None),
+                "__cookie:test-name1:test.se:80:/": create_cookie_dict("test-name1", "test-value1", None),
+                "__cookie:test-name2:test.se:80:/": create_cookie_dict("test-name2", "test-value2", None),
                 "unrelated": "data",
             },
         ],

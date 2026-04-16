@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import io
 import json
-import logging
+from typing import TYPE_CHECKING
 
-from streamlink.session import Streamlink
+from streamlink.logger import getLogger
 
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from streamlink.session import Streamlink
+
+
+log = getLogger(__name__)
 
 
 class Stream:

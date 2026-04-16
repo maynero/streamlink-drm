@@ -7,8 +7,8 @@ import importlib
 import logging
 import re
 import sys
-from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from streamlink import Streamlink
 from streamlink.logger import basicConfig
@@ -18,7 +18,13 @@ from streamlink.logger import basicConfig
 sys.path.append(str(Path(__file__).parent.parent))
 
 
-from tests.plugins import PluginCanHandleUrl, TUrlOrNamedUrl
+from tests.plugins import PluginCanHandleUrl
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from tests.plugins import TUrlOrNamedUrl
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -48,6 +54,16 @@ def parse_arguments() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Only print the plugin's test URLs",
+    )
+    parser.add_argument(
+        "--interface",
+        metavar="INTERFACE",
+        help="The network interface to use",
+    )
+    parser.add_argument(
+        "--http-proxy",
+        metavar="HTTP_PROXY",
+        help="The HTTP proxy to use",
     )
     parser.add_argument(
         "-i",
@@ -109,6 +125,9 @@ class PluginUrlTester:
         self.logcolor: str = args.color
         self.logger: logging.Logger = self._get_logger()
 
+        self.network_interface = args.interface
+        self.network_http_proxy = args.http_proxy
+
         self.ignorelist: list[str] = args.ignore or []
         self.replacelist: list[tuple[str, str]] = args.replace or []
         self.urls: set[str] = set()
@@ -167,6 +186,12 @@ class PluginUrlTester:
             self.logger.info(url)
 
             session = Streamlink(plugins_builtin=True)
+
+            if self.network_interface:
+                session.set_option("interface", self.network_interface)
+            if self.network_http_proxy:
+                session.set_option("http_proxy", self.network_http_proxy)
+
             # noinspection PyBroadException
             try:
                 pluginname, Pluginclass, _resolved_url = session.resolve_url(url)

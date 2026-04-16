@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
-from ctypes import CDLL, POINTER, Structure, byref
+from ctypes import POINTER, Structure, byref
 from ctypes.wintypes import (
     BOOL,
     DWORD,
@@ -12,8 +11,13 @@ from ctypes.wintypes import (
     WCHAR,
     WORD,
 )
-from io import TextIOWrapper
-from typing import Callable, ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+    from ctypes import CDLL
+    from io import TextIOWrapper
 
 
 # https://learn.microsoft.com/en-us/windows/console/coord-str
@@ -46,10 +50,7 @@ class _WinApiCall:
         method = getattr(dll, self.__class__.__name__)
         method.argtypes = self.argtypes
         method.restype = self.restype
-        self.method = method
-
-    def __call__(self, *args):  # pragma: no cover
-        return self.method(*args)
+        self.__call__ = self.method = method
 
     def _call_success(self, *args):
         if not self.method(*args):
@@ -167,9 +168,16 @@ class FillConsoleOutputCharacterW(_WinApiCall):
 
 
 class WindowsConsole:
+    get_std_handle: ClassVar[GetStdHandle]
+    get_console_mode: ClassVar[GetConsoleMode]
+    get_console_screen_buffer_info: ClassVar[GetConsoleScreenBufferInfo]
+    set_console_cursor_position: ClassVar[SetConsoleCursorPosition]
+    fill_console_output_attribute: ClassVar[FillConsoleOutputAttribute]
+    fill_console_output_character_w: ClassVar[FillConsoleOutputCharacterW]
+
     def __new__(cls, *args, **kwargs):
         try:
-            from ctypes import windll  # noqa: PLC0415
+            from ctypes import windll  # type: ignore[import, ty:unresolved-import]  # noqa: PLC0415
         except ImportError:  # pragma: no cover
             return None
 

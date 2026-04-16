@@ -22,23 +22,23 @@ jobs:
           - ubuntu-latest
           - windows-latest
         python-version:
-          - "3.9"
           - "3.10"
           - "3.11"
           - "3.12"
           - "3.13"
-          - "3.13t"
-        include:
-          - runs-on: ubuntu-latest
-            python-version: "3.14-dev"
-            continue: true
-          - runs-on: windows-latest
-            python-version: "3.14-dev"
-            continue: true
+          - "3.14"
+          - "3.14t"
+        # include:
+        #   - runs-on: ubuntu-latest
+        #     python-version: "3.15-dev"
+        #     continue: true
+        #   - runs-on: windows-latest
+        #     python-version: "3.15-dev"
+        #     continue: true
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 300
       - name: Fetch tags
@@ -50,7 +50,7 @@ jobs:
             || { ec=$?; [ $ec -eq 141 ] && true || (exit $ec); }
           git fetch origin --depth=300 --update-shallow
           git describe --tags --long --dirty
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install temp dependency wheels
@@ -67,11 +67,11 @@ jobs:
         shell: bash
         run: |
           export PYTHON_GIL=$(python -c 'import sysconfig;print(1 - sysconfig.get_config_var("Py_GIL_DISABLED"))')
-          pytest -r a --cov --cov-branch --cov-report=xml --durations 10
+          pytest --trace-config -r a -p pytest_cov --cov --cov-branch --cov-report=xml --durations 10
       - name: Upload coverage data
         if: github.event_name != 'schedule'
         continue-on-error: ${{ matrix.continue || false }}
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         with:
           name: os:${{ matrix.runs-on }} py:${{ matrix.python-version }}
         env:
@@ -79,11 +79,10 @@ jobs:
 
   test_build:
     name: Test build
-    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 300
       - name: Fetch tags
@@ -91,9 +90,9 @@ jobs:
           git ls-remote --tags --sort=version:refname 2>&- | awk 'END{printf "+%s:%s\n",$2,$2}' | git fetch origin --depth=300
           git fetch origin --depth=300 --update-shallow
           git describe --tags --long --dirty
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Install Python dependencies
         run: >
           python -m pip install -U
@@ -114,11 +113,10 @@ jobs:
 
   documentation:
     name: Test docs
-    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 300
       - name: Fetch tags
@@ -126,13 +124,14 @@ jobs:
           git ls-remote --tags --sort=version:refname 2>&- | awk 'END{printf "+%s:%s\n",$2,$2}' | git fetch origin --depth=300
           git fetch origin --depth=300 --update-shallow
           git describe --tags --long --dirty
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Install Python dependencies
         run: >
           python -m pip install -U
           -e .
           --group docs
+          'sphinx<9'
       - name: Build
         run: make --directory=docs html man

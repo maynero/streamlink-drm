@@ -11,13 +11,13 @@ $metadata title
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass, replace as dataclass_replace
 from ssl import OP_NO_TICKET
 from typing import ClassVar
 
 from streamlink.exceptions import NoStreamsError
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, PluginError, pluginargument, pluginmatcher
 from streamlink.plugin.api import useragents, validate
 from streamlink.session.http import SSLContextAdapter
@@ -34,12 +34,12 @@ from streamlink.stream.hls import (
 )
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 LOW_LATENCY_MAX_LIVE_EDGE = 2
 
 
-@dataclass
+@dataclass(kw_only=True)
 class KickHLSSegment(HLSSegment):
     prefetch: bool = False
 
@@ -79,13 +79,12 @@ class KickHLSStreamWorker(HLSStreamWorker):
     writer: KickHLSStreamWriter
     stream: KickHLSStream
 
-    def _playlist_reload_time(self, playlist: KickM3U8):  # type: ignore[override]
-        if self.stream.low_latency and playlist.segments:
-            return playlist.segments[-1].duration
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.stream.low_latency:
+            self.reload_time = "segment"
 
-        return super()._playlist_reload_time(playlist)
-
-    def process_segments(self, playlist: KickM3U8):  # type: ignore[override]
+    def process_segments(self, playlist: KickM3U8):  # type: ignore[override, ty:invalid-method-override]
         # ignore prefetch segments if not LL streaming
         if not self.stream.low_latency:
             playlist.segments = [segment for segment in playlist.segments if not segment.prefetch]
@@ -180,8 +179,8 @@ class Kick(Plugin):
 
     def _get_cookies_from_webbrowser(self) -> bool:
         from streamlink.compat import BaseExceptionGroup  # noqa: PLC0415
-        from streamlink.webbrowser.cdp import CDPClient, CDPClientSession  # noqa: PLC0415
-        from streamlink.webbrowser.cdp.devtools import fetch  # noqa: PLC0415
+        from streamlink.webbrowser.cdp import CDPClient, CDPClientSession  # noqa: PLC0415, TC001
+        from streamlink.webbrowser.cdp.devtools import fetch  # noqa: PLC0415, TC001
 
         async def on_main(client_session: CDPClientSession, request: fetch.RequestPaused):
             # get Chromium's request headers, update HTTP session headers and also cache them
@@ -215,7 +214,7 @@ class Kick(Plugin):
 
     def _get_api_headers(self):
         # _get_cookies_from_webbrowser() from above updates the session headers with Chromium's initial request headers
-        ua = self.session.http.headers.get("User-Agent", useragents.CHROME)
+        ua = str(self.session.http.headers.get("User-Agent", useragents.CHROME))
         if "Chrome/" not in ua:
             ua = useragents.CHROME
 

@@ -1,21 +1,26 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from io import StringIO
 from pathlib import Path
 from textwrap import dedent
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, call
 
 import pytest
 
 import streamlink_cli.main
 import tests
-from streamlink.logger import ALL, TRACE, StringFormatter
-from streamlink.session import Streamlink
-from streamlink_cli.argparser import ArgumentParser
+from streamlink.logger import ALL, TRACE, StringFormatter, getLogger, root as rootlogger
 from streamlink_cli.exceptions import StreamlinkCLIError
 from streamlink_cli.main import build_parser
+
+
+if TYPE_CHECKING:
+    from streamlink.session import Streamlink
+    from streamlink_cli.argparser import ArgumentParser
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +60,6 @@ class TestStdoutStderr:
     def test_streams(self, capsys: pytest.CaptureFixture, parser: ArgumentParser, argv: list, stream: str | None):
         streamlink_cli.main.setup(parser)
 
-        rootlogger = logging.getLogger("streamlink")
         clilogger = streamlink_cli.main.log
         assert clilogger.parent is rootlogger
 
@@ -95,7 +99,7 @@ class TestStdoutStderr:
         stderr: str,
     ):
         def run(_parser):
-            childlogger = logging.getLogger("streamlink.test_main_logging")
+            childlogger = getLogger("streamlink.test_main_logging")
             streamlink_cli.main.log.info("a")
             childlogger.error("b")
             raise StreamlinkCLIError("c")
@@ -149,7 +153,7 @@ class TestStdoutStderr:
         expected_stderr: str,
     ):
         def run(_parser):
-            childlogger = logging.getLogger("streamlink.test_main_logging")
+            childlogger = getLogger("streamlink.test_main_logging")
             streamlink_cli.main.log.info("a")
             childlogger.error("b")
             raise StreamlinkCLIError("c")
@@ -469,7 +473,6 @@ class TestInfos:
 def test_logformat(argv: list, parser: ArgumentParser, level: int, fmt: str, datefmt: str):
     streamlink_cli.main.setup(parser)
 
-    rootlogger = logging.getLogger("streamlink")
     assert rootlogger.level == level
     assert rootlogger.handlers
     formatter = rootlogger.handlers[0].formatter
@@ -538,7 +541,6 @@ class TestLogfile:
         monkeypatch.setattr("builtins.open", mock_open)
 
         streamlink_cli.main.setup(parser)
-        rootlogger = logging.getLogger("streamlink")
 
         if stream is None:
             assert not streamlink_cli.main.console.console_output
@@ -611,7 +613,6 @@ class TestLogfile:
         streamlink_cli.main.setup(parser)
         assert abspath.parent.exists()
 
-        rootlogger = logging.getLogger("streamlink")
         assert isinstance(rootlogger.handlers[0], logging.FileHandler)
         assert rootlogger.handlers[0].baseFilename == str(abspath)
         assert rootlogger.handlers[0].stream is streamobj
@@ -637,7 +638,7 @@ class TestLogfile:
         abspath = str(Path().resolve() / "tty")
 
         streamobj = StringIO()
-        streamobj.isatty = lambda: True  # type: ignore[method-assign]
+        streamobj.isatty = lambda: True  # type: ignore[method-assign, ty:invalid-assignment]
 
         mock_open = Mock(return_value=streamobj)
         monkeypatch.setattr("builtins.open", mock_open)
@@ -645,7 +646,6 @@ class TestLogfile:
         streamlink_cli.main.setup(parser)
         assert mock_open.call_args_list == [call(abspath, "a", encoding="utf-8", errors=None)]
 
-        rootlogger = logging.getLogger("streamlink")
         handler = rootlogger.handlers[0]
         assert isinstance(handler, logging.FileHandler)
         assert handler.stream is streamobj
@@ -662,7 +662,12 @@ class TestLogfile:
 
 
 class TestPrint:
-    @pytest.fixture(autouse=True)
+    @pytest.fixture()
+    def _color(self, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+        can_colorize = getattr(request, "param", False)
+        monkeypatch.setattr("_colorize.can_colorize", lambda: can_colorize)
+
+    @pytest.fixture()
     def stdout(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, session: Streamlink):
         mock_resolve_url = Mock()
         monkeypatch.setattr(session, "resolve_url", mock_resolve_url)
@@ -677,7 +682,8 @@ class TestPrint:
 
         return out
 
-    def test_usage(self, stdout: str):
+    @pytest.mark.parametrize("_color", [True, False], ids=["color", "nocolor"])
+    def test_usage(self, stdout: str, _color):
         assert (
             stdout
             == dedent("""
@@ -707,6 +713,12 @@ class TestPrint:
             """)
             in stdout
         )
+
+    @pytest.mark.python(3, 14)
+    @pytest.mark.parametrize(("argv", "_color"), [(["--help"], True)], indirect=["argv", "_color"])
+    def test_help_color(self, _color, argv: list, stdout: str):
+        # Python's _colorize module also uses ANSI escape sequences on Windows
+        assert re.match(r"\x1b\[1;\d+musage: ", stdout), "Uses color in help-text and colors its usage line"
 
     @pytest.mark.parametrize(
         ("argv", "expected"),

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
-from datetime import datetime, timezone, tzinfo
-from typing import Generic, TypeVar
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 from isodate import LOCAL, parse_datetime  # type: ignore[import]
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from datetime import tzinfo
 
 
 UTC = timezone.utc
@@ -128,11 +132,7 @@ hours_minutes_seconds_float: Callable[[str], float] = _HoursMinutesSeconds[float
 def seconds_to_hhmmss(seconds):
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
-    return "{0:02d}:{1:02d}:{2}".format(
-        int(hours),
-        int(minutes),
-        "{0:02.1f}".format(seconds) if seconds % 1 else "{0:02d}".format(int(seconds)),
-    )
+    return f"{hours:02.0f}:{minutes:02.0f}:{f'{seconds:02.1f}' if seconds % 1 else f'{seconds:02.0f}'}"
 
 
 __all__ = [

@@ -1,6 +1,8 @@
+import socket
 import ssl
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
-from typing import Any
+from pathlib import Path
+from typing import Any, TypeAlias
 
 # noinspection PyUnresolvedReferences
 from _typeshed import SupportsItems, SupportsRead  # noqa: PLC2701
@@ -8,7 +10,6 @@ from requests import PreparedRequest, Response, Session
 from requests.adapters import HTTPAdapter
 from requests.auth import AuthBase
 from requests.cookies import RequestsCookieJar
-from typing_extensions import TypeAlias
 
 from streamlink.plugin.api.validate import Schema
 from streamlink.session import Streamlink
@@ -60,7 +61,7 @@ _Params: TypeAlias = (
 )
 _TextMapping: TypeAlias = MutableMapping[str, str]
 _HeadersUpdateMapping: TypeAlias = Mapping[str, str | bytes | None]
-_Timeout: TypeAlias = float | tuple[float, float] | tuple[float, None]
+_Timeout: TypeAlias = float | tuple[float | None, float | None]
 _Verify: TypeAlias = bool | str
 
 # END: borrowed from typeshed / types-requests
@@ -104,6 +105,10 @@ class HTTPSession(Session):
         *args,
         **kwargs,
     ) -> Any: ...
+    def set_interface(self, interface: str | None) -> None: ...
+    def set_address_family(self, family: socket.AddressFamily | None = None) -> None: ...
+    def disable_dh(self, disable: bool = True) -> None: ...
+    def set_cookies_from_file(self, path: Path | str) -> None: ...
     def resolve_url(self, url: str) -> str: ...
     @staticmethod
     def valid_request_args(**req_keywords) -> dict[str, Any]: ...

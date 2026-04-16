@@ -1,31 +1,36 @@
 from __future__ import annotations
 
 import argparse
-import logging as _logging
 import numbers
 import re
 import warnings
-from collections.abc import Callable
+from gettext import gettext as _, ngettext
 from pathlib import Path
 from string import printable
 from textwrap import dedent
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from streamlink import __version__ as streamlink_version, logger
 from streamlink.exceptions import StreamlinkDeprecationWarning
+from streamlink.logger import getLogger
 from streamlink.options import Options
-from streamlink.plugin import Plugin
-from streamlink.session import Streamlink
-from streamlink.user_input import UserInputRequester
 from streamlink.utils.args import boolean, comma_list, comma_list_filter, filesize, keyvalue, num
 from streamlink.utils.times import hours_minutes_seconds_float
 from streamlink_cli.constants import STREAM_PASSTHROUGH
 from streamlink_cli.exceptions import StreamlinkCLIError
-from streamlink_cli.output.player import PlayerOutput
+from streamlink_cli.output.player import PlayerArgs, PlayerOutput
 from streamlink_cli.utils import find_default_player
 
 
-log = _logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from streamlink.plugin import Plugin
+    from streamlink.session import Streamlink
+    from streamlink.user_input import UserInputRequester
+
+
+log = getLogger(__name__)
 
 
 class ArgumentParser(argparse.ArgumentParser):
@@ -37,6 +42,7 @@ class ArgumentParser(argparse.ArgumentParser):
 
     def __init__(self, *args, **kwargs):
         self.NESTED_ARGUMENT_GROUPS = {}
+        self.color = True  # pre 3.14 compat
         super().__init__(*args, **kwargs)
 
     # noinspection PyUnresolvedReferences,PyProtectedMember
@@ -53,28 +59,27 @@ class ArgumentParser(argparse.ArgumentParser):
             self.NESTED_ARGUMENT_GROUPS[parent].append(group)
         return group
 
-    def convert_arg_line_to_args(self, line):
+    def convert_arg_line_to_args(self, arg_line: str) -> list[str]:
         # Strip any non-printable characters that might be in the
         # beginning of the line (e.g. Unicode BOM marker).
-        match = self._RE_PRINTABLE.search(line)
+        match = self._RE_PRINTABLE.search(arg_line)
         if not match:
-            return
-        line = line[match.start() :].strip()
+            return []
+        arg_line = arg_line[match.start() :].strip()
 
         # Skip lines that do not start with a valid option (e.g. comments)
-        option = self._RE_OPTION.match(line)
+        option = self._RE_OPTION.match(arg_line)
         if not option:
-            return
+            return []
 
         name, op, value = option.group("name", "op", "value")
         prefix = self.prefix_chars[0] if len(name) == 1 else self.prefix_chars[0] * 2
         if value or op:
-            yield f"{prefix}{name}={value}"
+            return [f"{prefix}{name}={value}"]
         else:
-            yield f"{prefix}{name}"
+            return [f"{prefix}{name}"]
 
-    # noinspection PyProtectedMember,PyUnresolvedReferences,PyTypeChecker
-    def _match_argument(self, action, arg_strings_pattern):
+    def _match_argument(self, action: argparse.Action, arg_strings_pattern: str) -> int:
         # - https://github.com/streamlink/streamlink/issues/971
         # - https://bugs.python.org/issue9334
         # - https://github.com/python/cpython/blame/v3.13.0rc2/Lib/argparse.py#L2227-L2247
@@ -87,23 +92,32 @@ class ArgumentParser(argparse.ArgumentParser):
         # required number of arguments regardless of their values
         if match is None:
             nargs = action.nargs if action.nargs is not None else 1
-            if isinstance(nargs, numbers.Number) and len(arg_strings_pattern) >= nargs:
-                return nargs
+            if isinstance(nargs, numbers.Number) and len(arg_strings_pattern) >= int(nargs):
+                return int(nargs)
 
         # raise an exception if we weren't able to find a match
         if match is None:
-            nargs_errors = {
-                None: argparse._("expected one argument"),
-                argparse.OPTIONAL: argparse._("expected at most one argument"),
-                argparse.ONE_OR_MORE: argparse._("expected at least one argument"),
-            }
-            msg = nargs_errors.get(action.nargs)
-            if msg is None:
-                msg = argparse.ngettext("expected %s argument", "expected %s arguments", action.nargs) % action.nargs
+            if isinstance(action.nargs, numbers.Number):
+                msg = ngettext("expected %s argument", "expected %s arguments", int(action.nargs)) % int(action.nargs)
+            else:
+                nargs_errors: dict[str | int | None, str] = {
+                    argparse.OPTIONAL: _("expected at most one argument"),
+                    argparse.ONE_OR_MORE: _("expected at least one argument"),
+                }
+                msg = nargs_errors.get(action.nargs, _("expected one argument"))
             raise argparse.ArgumentError(action, msg)
 
         # return the number of arguments matched
         return len(match.group(1))
+
+    # disable color output for the "usage" text
+    def format_usage(self):
+        color = self.color
+        self.color = False
+        try:
+            return super().format_usage()
+        finally:
+            self.color = color
 
     # fix `--help` not including nested argument groups
     def format_help(self):
@@ -454,7 +468,15 @@ def build_parser():
         type=str,
         metavar="INTERFACE",
         help="""
-            Set the network interface.
+            Select the network interface, either by IP address or by interface name.
+
+            The following optional prefixes are supported:
+
+            - `if!<name>` interface name
+            - `host!<name>` IP address or hostname
+            - `ifhost!<interface>!<host>` interface name and IP address or hostname
+
+            Note: On Windows, only IP addresses are supported and prefixes are ignored.
         """,
     )
     network.add_argument(
@@ -674,6 +696,7 @@ def build_parser():
             This option will instead let the player decide when to exit.
         """,
     )
+    # noinspection PyTypeChecker
     player.add_argument(
         "-t",
         "--title",
@@ -685,8 +708,7 @@ def build_parser():
             as well as the "Plugins" section for the list of metadata variables defined in each plugin.
 
             Only the following players are supported:
-
-            {", ".join(sorted(PlayerOutput.PLAYERS.keys()))}
+            {"".join(f"{chr(0x0A)}            - {pn}" for pn in PlayerArgs.get_player_names())}
 
             Example:
 
@@ -991,6 +1013,41 @@ def build_parser():
         """,
     )
     transport.add_argument(
+        "--stream-segmented-duration",
+        type=hours_minutes_seconds_float,
+        metavar="[[XX:]XX:]XX[.XX] | [XXh][XXm][XX[.XX]s]",
+        help="""
+            Limit the output duration of segmented streams, like HLS and DASH.
+            The actual duration may be slightly longer, as it is rounded to the nearest segment.
+
+            Set to 0 to disable.
+
+            Default is 0.
+        """,
+    )
+    transport.add_argument(
+        "--stream-segmented-queue-deadline",
+        metavar="FACTOR",
+        type=num(float, ge=0.0),
+        help="""
+            A multiplication factor of the time frame in which new segments must be queued in order to prevent playback issues
+            due to lack of video/audio data. If this segment-queue-deadline has not been met, the stream will be stopped early.
+
+            The intention of this segment-queue-deadline is to be able to stop early when the end of a stream is not announced
+            by the server, so Streamlink doesn't have to wait until a buffer read-timeout occurs. See --stream-timeout.
+
+            The base time this multiplication factor is applied to depends on the specific
+            stream implementation and the respective values returned by the streaming server.
+            This deadline check is done after trying to fetch new data.
+
+            Set to ``0`` to disable.
+
+            Default is 3.0.
+
+            By default, wait three times as long for new segments to be made available than the server's advertised time frame.
+        """,
+    )
+    transport.add_argument(
         "--stream-timeout",
         type=num(float, gt=0),
         metavar="TIMEOUT",
@@ -1000,6 +1057,16 @@ def build_parser():
             This applies to all different kinds of stream types, such as DASH, HLS, HTTP, etc.
 
             Default is 60.0.
+        """,
+    )
+    transport.add_argument(
+        "--stream-passthrough-encrypted",
+        action="store_true",
+        default=None,
+        help="""
+            Pass through data from encrypted streams without decryption or encryption checks.
+
+            This applies to DASH and HLS streams, and will likely result in garbage output.
         """,
     )
     transport.add_argument(
@@ -1067,19 +1134,9 @@ def build_parser():
     transport_hls.add_argument(
         "--hls-segment-queue-threshold",
         metavar="FACTOR",
-        type=num(float, ge=0),
+        type=num(float, ge=0.0),
         help="""
-            The multiplication factor of the HLS playlist's target duration after which the stream will be stopped early
-            if no new segments were queued after refreshing the playlist (multiple times). The target duration defines the
-            maximum duration a single segment can have, meaning new segments must be available during this time frame,
-            otherwise playback issues can occur.
-
-            The intention of this queue threshold is to be able to stop early when the end of a stream doesn't get
-            announced by the server, so Streamlink doesn't have to wait until a read-timeout occurs. See --stream-timeout.
-
-            Set to ``0`` to disable.
-
-            Default is 3.
+            Deprecated in favor of --stream-segmented-queue-deadline.
         """,
     )
     transport_hls.add_argument(
@@ -1151,10 +1208,7 @@ def build_parser():
         type=hours_minutes_seconds_float,
         metavar="[[XX:]XX:]XX[.XX] | [XXh][XXm][XX[.XX]s]",
         help="""
-            Limit the playback duration, useful for watching segments of a stream.
-            The actual duration may be slightly longer, as it is rounded to the nearest HLS segment.
-
-            Default is unlimited.
+            Deprecated in favor of --stream-segmented-duration.
         """,
     )
     transport_hls.add_argument(
@@ -1300,6 +1354,18 @@ def build_parser():
             Enable the `-start_at_zero` FFmpeg option when using --ffmpeg-copyts.
         """,
     )
+    transport_ffmpeg.add_argument(
+        "--ffmpeg-validation-timeout",
+        type=float,
+        metavar="SECONDS",
+        help="""
+            Timeout in seconds for FFmpeg version validation.
+
+            Default is 4.0.
+
+            Increase this on low-power systems if FFmpeg startup is slow.
+        """,
+    )
 
     http = parser.add_argument_group("HTTP options")
     http.add_argument(
@@ -1321,6 +1387,23 @@ def build_parser():
             A cookie to add to each HTTP request.
 
             Can be repeated to add multiple cookies.
+        """,
+    )
+    http.add_argument(
+        "--http-cookies-file",
+        metavar="PATH",
+        action="append",
+        help="""
+            A path to a cookies file whose cookie data will be added to HTTP requests.
+
+            Can be repeated to add multiple cookie files.
+
+            The file format must adhere to the Netscape HTTP Cookie File format (MozillaCookieJar, curl, etc.),
+            also known as cookies.txt. Be aware that this format loses information about RFC 2965 cookies,
+            and also about newer or non-standard cookie-attributes such as port.
+
+            Unlike --http-cookie, which sends data with every request, this option enables granular control
+            by respecting domain, path, and other cookie attributes.
         """,
     )
     http.add_argument(
@@ -1486,7 +1569,7 @@ def build_parser():
 
 # The order of arguments determines if options get overridden by `Streamlink.set_option()`
 # NOTE: arguments with `action=store_{true,false}` must set `default=None`
-_ARGUMENT_TO_SESSIONOPTION: list[tuple[str, str, Callable[[Any], Any] | None]] = [
+_ARGUMENT_TO_SESSIONOPTION: list[tuple[str, str, Callable[[Any], Any] | type | None]] = [
     # generic arguments
     ("no_plugin_cache", "no-plugin-cache", None),
     ("locale", "locale", None),
@@ -1497,6 +1580,7 @@ _ARGUMENT_TO_SESSIONOPTION: list[tuple[str, str, Callable[[Any], Any] | None]] =
     # HTTP session arguments
     ("https_proxy", "https-proxy", None),
     ("http_proxy", "http-proxy", None),
+    ("http_cookies_file", "http-cookies-files", None),
     ("http_cookie", "http-cookies", dict),
     ("http_header", "http-headers", dict),
     ("http_query_param", "http-query-params", dict),
@@ -1507,19 +1591,22 @@ _ARGUMENT_TO_SESSIONOPTION: list[tuple[str, str, Callable[[Any], Any] | None]] =
     ("http_ssl_cert_crt_key", "http-ssl-cert", tuple),
     ("http_timeout", "http-timeout", None),
     # stream transport arguments
+    ("hls_duration", "hls-duration", None),  # deprecated options must come first
+    ("hls_segment_queue_threshold", "hls-segment-queue-threshold", None),  # deprecated options must come first
     ("ringbuffer_size", "ringbuffer-size", None),
     ("mux_subtitles", "mux-subtitles", None),
     ("stream_segment_attempts", "stream-segment-attempts", None),
     ("stream_segment_threads", "stream-segment-threads", None),
     ("stream_segment_timeout", "stream-segment-timeout", None),
+    ("stream_segmented_duration", "stream-segmented-duration", None),
+    ("stream_segmented_queue_deadline", "stream-segmented-queue-deadline", None),
     ("stream_timeout", "stream-timeout", None),
+    ("stream_passthrough_encrypted", "stream-passthrough-encrypted", None),
     ("hls_live_edge", "hls-live-edge", None),
     ("hls_live_restart", "hls-live-restart", None),
     ("hls_start_offset", "hls-start-offset", None),
-    ("hls_duration", "hls-duration", None),
     ("hls_playlist_reload_attempts", "hls-playlist-reload-attempts", None),
     ("hls_playlist_reload_time", "hls-playlist-reload-time", None),
-    ("hls_segment_queue_threshold", "hls-segment-queue-threshold", None),
     ("hls_segment_stream_data", "hls-segment-stream-data", None),
     ("hls_segment_ignore_names", "hls-segment-ignore-names", None),
     ("hls_segment_key_uri", "hls-segment-key-uri", None),
@@ -1545,6 +1632,7 @@ _ARGUMENT_TO_SESSIONOPTION: list[tuple[str, str, Callable[[Any], Any] | None]] =
     ("webbrowser_cdp_port", "webbrowser-cdp-port", None),
     ("webbrowser_cdp_timeout", "webbrowser-cdp-timeout", None),
     ("webbrowser_headless", "webbrowser-headless", None),
+    ("ffmpeg_validation_timeout", "ffmpeg-validation-timeout", None),
 ]
 
 

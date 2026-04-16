@@ -35,15 +35,20 @@ import logging
 import operator
 import re
 import sys
-from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from textwrap import dedent, indent as tw_indent
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-import inflection  # type: ignore[import]
+import inflection
 import requests
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from typing_extensions import Self
 
 
 URL_API_NPMJS_LATEST = "https://registry.npmjs.org/devtools-protocol/latest"
@@ -98,28 +103,48 @@ UTIL = f"""{SHARED_HEADER}
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from abc import ABC, ABCMeta, abstractmethod
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 
 if TYPE_CHECKING:
-    from typing_extensions import TypeAlias
+    from collections.abc import MutableMapping
+
+    from typing_extensions import Self
 
 
-T_JSON_DICT: TypeAlias = "dict[str, Any]"
-_event_parsers = {{{{}}}}
+T_JSON_DICT: TypeAlias = dict[str, Any]
+_event_parsers: MutableMapping[str, type[CDPEvent]] = {{{{}}}}
 
 
-def event_class(method):
-    \"\"\"A decorator that registers a class as an event class.\"\"\"
+class _CDPEventMetaBase(type):
+    def __new__(
+        cls,
+        name,
+        bases,
+        namespace,
+        event: str | None = None,
+        **kwargs,
+    ) -> _CDPEventMetaBase:
+        obj = super().__new__(cls, name, bases, namespace, **kwargs)
+        if event is not None:
+            _event_parsers[event] = cast("type[CDPEvent]", obj)
 
-    def decorate(cls):
-        _event_parsers[method] = cls
-        return cls
-
-    return decorate
+        return obj
 
 
-def parse_json_event(json: T_JSON_DICT) -> Any:
+class _CDPEventMeta(_CDPEventMetaBase, ABCMeta):
+    pass
+
+
+class CDPEvent(ABC, metaclass=_CDPEventMeta):
+    @classmethod
+    @abstractmethod
+    def from_json(cls, json: T_JSON_DICT) -> Self:  # pragma: no cover
+        raise NotImplementedError
+
+
+def parse_json_event(json: T_JSON_DICT) -> CDPEvent:
     \"\"\"Parse a JSON dictionary into a CDP event.\"\"\"
     return _event_parsers[json["method"]].from_json(json["params"])
 """
@@ -252,7 +277,7 @@ class CdpItems:
     ref: str
 
     @classmethod
-    def from_json(cls, type_) -> "CdpItems":
+    def from_json(cls, type_) -> Self:
         """Generate code to instantiate an item from a JSON object."""
         return cls(type_.get("type"), type_.get("$ref"))
 
@@ -291,13 +316,13 @@ class CdpProperty:
                 py_ref = ref_to_python(self.ref, self.domain)
                 ann = py_ref
             else:
-                ann = CdpPrimitiveType.get_annotation(cast(str, self.type))
+                ann = CdpPrimitiveType.get_annotation(cast("str", self.type))
         if self.optional:
             ann = f"{ann} | None"
         return ann
 
     @classmethod
-    def from_json(cls, property_, domain) -> "CdpProperty":
+    def from_json(cls, property_, domain) -> Self:
         """Instantiate a CDP property from a JSON object."""
         return cls(
             property_["name"],
@@ -380,7 +405,7 @@ class CdpType:
     domain: str
 
     @classmethod
-    def from_json(cls, type_, domain) -> "CdpType":
+    def from_json(cls, type_, domain) -> Self:
         """Instantiate a CDP type from a JSON object."""
         return cls(
             type_["id"],
@@ -560,7 +585,7 @@ class CdpParameter(CdpProperty):
             if self.ref:
                 py_type = f"{ref_to_python(self.ref, self.domain)}"
             else:
-                py_type = CdpPrimitiveType.get_annotation(cast(str, self.type))
+                py_type = CdpPrimitiveType.get_annotation(cast("str", self.type))
         if self.optional:
             py_type = f"{py_type} | None"
         code = f"{self.py_name}: {py_type}"
@@ -655,7 +680,7 @@ class CdpCommand:
         return snake_case(self.name)
 
     @classmethod
-    def from_json(cls, command, domain) -> "CdpCommand":
+    def from_json(cls, command, domain) -> Self:
         """Instantiate a CDP command from a JSON object."""
         parameters = command.get("parameters", [])
         returns = command.get("returns", [])
@@ -665,8 +690,8 @@ class CdpCommand:
             command.get("description"),
             command.get("experimental", False),
             command.get("deprecated", False),
-            [cast(CdpParameter, CdpParameter.from_json(p, domain)) for p in parameters],
-            [cast(CdpReturn, CdpReturn.from_json(r, domain)) for r in returns],
+            [CdpParameter.from_json(p, domain) for p in parameters],
+            [CdpReturn.from_json(r, domain) for r in returns],
             domain,
         )
 
@@ -784,16 +809,15 @@ class CdpEvent:
             json_.get("description"),
             json_.get("deprecated", False),
             json_.get("experimental", False),
-            [cast(CdpParameter, CdpParameter.from_json(p, domain)) for p in json_.get("parameters", [])],
+            [CdpParameter.from_json(p, domain) for p in json_.get("parameters", [])],
             domain,
         )
 
     def generate_code(self) -> str:
         """Generate code for a CDP event."""
         code = dedent(f"""\
-            @event_class(\"{self.domain}.{self.name}\")
             @dataclass
-            class {self.py_name}:""")
+            class {self.py_name}(CDPEvent, event=\"{self.domain}.{self.name}\"):""")
 
         code += "\n"
         desc = ""
@@ -861,7 +885,7 @@ class CdpDomain:
             domain.get("description"),
             domain.get("experimental", False),
             domain.get("dependencies", []),
-            [CdpType.from_json(_type, domain_name) for _type in types],
+            [CdpType.from_json(typeitem, domain_name) for typeitem in types],
             [CdpCommand.from_json(command, domain_name) for command in commands],
             [CdpEvent.from_json(event, domain_name) for event in events],
         )
@@ -916,7 +940,7 @@ class CdpDomain:
         """
         dependencies = self.get_imports()
         imports = [f"import {package}.{d} as {d}\n" for d in sorted(dependencies)]
-        imports.append(f"from {package}.util import T_JSON_DICT, event_class")
+        imports.append(f"from {package}.util import T_JSON_DICT, CDPEvent")
 
         return "".join(imports)
 

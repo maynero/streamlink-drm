@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 from unittest.mock import ANY, AsyncMock, Mock, call
 
 import pytest
@@ -10,24 +9,24 @@ import trio
 from trio.testing import wait_all_tasks_blocked
 
 from streamlink.compat import ExceptionGroup
-from streamlink.session import Streamlink
 from streamlink.webbrowser.cdp.client import CDPClient, CDPClientSession, RequestPausedHandler
 from streamlink.webbrowser.cdp.connection import CDPConnection, CDPSession
 from streamlink.webbrowser.cdp.devtools.fetch import RequestPaused
 from streamlink.webbrowser.cdp.devtools.target import SessionID, TargetID
 from streamlink.webbrowser.cdp.exceptions import CDPError
-from tests.webbrowser.cdp import FakeWebsocketConnection
 
 
 if TYPE_CHECKING:
-    from typing_extensions import TypeAlias
+    from collections.abc import Awaitable, Callable
 
+    from streamlink.session import Streamlink
+    from tests.webbrowser.cdp import FakeWebsocketConnection
 
-TAsyncHandler: TypeAlias = "AsyncMock | Callable[[CDPClientSession, RequestPaused], Awaitable]"
+    TAsyncHandler: TypeAlias = AsyncMock | Callable[[CDPClientSession, RequestPaused], Awaitable]
 
 
 def async_handler(*args, **kwargs):
-    return cast(TAsyncHandler, AsyncMock(*args, **kwargs))
+    return cast("TAsyncHandler", AsyncMock(*args, **kwargs))
 
 
 @pytest.fixture()
@@ -612,10 +611,10 @@ class TestNavigate:
         mock_on_fetch_request_paused = AsyncMock()
         monkeypatch.setattr(cdp_client_session, "_on_fetch_request_paused", mock_on_fetch_request_paused)
 
-        for _on_request in on_request:
-            cdp_client_session.add_request_handler(async_handler(), on_request=_on_request)
-            cdp_client_session.add_request_handler(async_handler(), on_request=_on_request)
-            cdp_client_session.add_request_handler(async_handler(), url_pattern="http://foo", on_request=_on_request)
+        for on_request_item in on_request:
+            cdp_client_session.add_request_handler(async_handler(), on_request=on_request_item)
+            cdp_client_session.add_request_handler(async_handler(), on_request=on_request_item)
+            cdp_client_session.add_request_handler(async_handler(), url_pattern="http://foo", on_request=on_request_item)
 
         async def navigate():
             async with cdp_client_session.navigate("https://foo"):
@@ -808,6 +807,7 @@ class TestRequestMethods:
             async with cdp_client_session.alter_request(req_paused, 404, {"a": "b", "c": "d"}) as cmproxy:
                 assert cmproxy.body == "foo"
                 assert cmproxy.response_code == 404
+                assert cmproxy.response_headers is not None
                 assert cmproxy.response_headers == {"a": "b", "c": "d"}
                 cmproxy.body = cmproxy.body.upper()
                 cmproxy.response_code -= 3

@@ -1,37 +1,34 @@
 from __future__ import annotations
 
 import warnings
-from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from socket import AF_INET, AF_INET6
 from typing import TYPE_CHECKING, Any, ClassVar
 
-import urllib3.util.connection as urllib3_util_connection
-from requests.adapters import HTTPAdapter
-
 from streamlink.exceptions import StreamlinkDeprecationWarning
 from streamlink.options import Options
-from streamlink.session.http import TLSNoDHAdapter
 from streamlink.utils.url import update_scheme
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator, Mapping
+
     from streamlink.session import Streamlink
 
 
 _session_file = str(Path(__file__).parent / "session.py")
 
-_original_allowed_gai_family = urllib3_util_connection.allowed_gai_family  # type: ignore[attr-defined]
 
-
-def _get_deprecation_stacklevel_offset():
-    """Deal with stacklevels of both session.{g,s}et_option() and session.options.{g,s}et() calls"""
+def _get_deprecation_stacklevel_offset(offset: int = 0) -> int:
+    """Deal with stacklevels of both session.{get_option,set_option}() and session.options.{get,set}() calls"""
     from inspect import currentframe  # noqa: PLC0415
 
-    frame = currentframe().f_back.f_back
-    offset = 0
+    frame = currentframe()
+    ignoreframes = 2
     while frame:
-        if frame.f_code.co_filename == _session_file and frame.f_code.co_name in ("set_option", "get_option"):
+        if ignoreframes > 0:
+            ignoreframes -= 1
+        elif frame.f_code.co_filename == _session_file and frame.f_code.co_name in ("set_option", "get_option"):
             offset += 1
             break
         frame = frame.f_back
@@ -71,7 +68,7 @@ class StreamlinkOptions(Options):
         * - interface
           - ``str | None``
           - ``None``
-          - Network interface address
+          - Network interface name or address.
         * - ipv4
           - ``bool``
           - ``False``
@@ -93,6 +90,10 @@ class StreamlinkOptions(Options):
           - ``{}``
           - A ``dict`` or a semicolon ``;`` delimited ``str`` of cookies to add to each HTTP/HTTPS request,
             e.g. ``foo=bar;baz=qux``
+        * - http-cookies-files
+          - ``list[str]``
+          - ``[]``
+          - A ``list`` of Netscape HTTP Cookie Files whose data will be added to HTTP/HTTPS requests
         * - http-headers
           - ``dict[str, str] | str``
           - ``{}``
@@ -144,10 +145,22 @@ class StreamlinkOptions(Options):
           - ``float``
           - ``10.0``
           - Segment connect and read timeout
+        * - stream-segmented-duration
+          - ``float``
+          - ``0.0``
+          - Limit the playback duration of segmented streams, rounded to the nearest segment
+        * - stream-segmented-queue-deadline
+          - ``float``
+          - ``3``
+          - Multiplication factor of the deadline for new segments to be queued
         * - stream-timeout
           - ``float``
           - ``60.0``
           - Timeout for reading data from stream
+        * - stream-passthrough-encrypted
+          - ``bool``
+          - ``False``
+          - Pass through encrypted stream segments without attempting decryption
         * - hls-live-edge
           - ``int``
           - ``3``
@@ -161,10 +174,10 @@ class StreamlinkOptions(Options):
           - ``0.0``
           - Number of seconds to skip from the beginning of the HLS stream,
             interpreted as a negative offset for livestreams
-        * - hls-duration
-          - ``float | None``
-          - ``None``
-          - Limit the HLS stream playback duration, rounded to the nearest HLS segment
+        * - hls-duration *(deprecated)*
+          - ``float``
+          - ``0.0``
+          - See ``stream-segmented-duration``
         * - hls-playlist-reload-attempts
           - ``int``
           - ``3``
@@ -177,10 +190,10 @@ class StreamlinkOptions(Options):
             - ``segment``: duration of the last segment
             - ``live-edge``: sum of segment durations of the ``hls-live-edge`` value minus one
             - ``default``: the playlist's target duration
-        * - hls-segment-queue-threshold
+        * - hls-segment-queue-threshold *(deprecated)*
           - ``float``
           - ``3``
-          - Factor of the playlist's targetduration which sets the threshold for stopping early on missing segments
+          - See ``stream-segmented-queue-deadline``
         * - hls-segment-stream-data
           - ``bool``
           - ``False``
@@ -228,6 +241,10 @@ class StreamlinkOptions(Options):
           - ``bool``
           - ``False``
           - Disable FFmpeg validation and version logging
+        * - ffmpeg-validation-timeout
+          - ``float``
+          - ``4.0``
+          - Timeout in seconds for FFmpeg version validation
         * - ffmpeg-verbose
           - ``bool``
           - ``False``
@@ -303,14 +320,15 @@ class StreamlinkOptions(Options):
             "stream-segment-attempts": 3,
             "stream-segment-threads": 1,
             "stream-segment-timeout": 10.0,
+            "stream-segmented-duration": 0.0,
+            "stream-segmented-queue-deadline": 3,
             "stream-timeout": 60.0,
+            "stream-passthrough-encrypted": False,
             "hls-live-edge": 3,
             "hls-live-restart": False,
             "hls-start-offset": 0.0,
-            "hls-duration": None,
             "hls-playlist-reload-attempts": 3,
             "hls-playlist-reload-time": "default",
-            "hls-segment-queue-threshold": 3,
             "hls-segment-stream-data": False,
             "hls-segment-ignore-names": [],
             "hls-segment-key-uri": None,
@@ -320,6 +338,7 @@ class StreamlinkOptions(Options):
             "dash-manifest-reload-attempts": 3,
             "ffmpeg-ffmpeg": None,
             "ffmpeg-no-validation": False,
+            "ffmpeg-validation-timeout": 4.0,
             "ffmpeg-verbose": False,
             "ffmpeg-verbose-path": None,
             "ffmpeg-loglevel": None,
@@ -355,7 +374,7 @@ class StreamlinkOptions(Options):
             warnings.warn(
                 "The `https-proxy` option has been deprecated in favor of a single `http-proxy` option",
                 StreamlinkDeprecationWarning,
-                stacklevel=4 + _get_deprecation_stacklevel_offset(),
+                stacklevel=_get_deprecation_stacklevel_offset(4),
             )
 
     # ---- getters
@@ -370,26 +389,24 @@ class StreamlinkOptions(Options):
     # ---- setters
 
     def _set_interface(self, key, value):
-        for adapter in self.session.http.adapters.values():
-            if not isinstance(adapter, HTTPAdapter):
-                continue
-            if not value:
-                adapter.poolmanager.connection_pool_kw.pop("source_address", None)
-            else:
-                # https://docs.python.org/3/library/socket.html#socket.create_connection
-                adapter.poolmanager.connection_pool_kw.update(source_address=(value, 0))
+        self.session.http.set_interface(interface=value)
         self.set_explicit(key, None if not value else value)
 
     def _set_ipv4_ipv6(self, key, value):
-        self.set_explicit(key, value)
-        if not value:
-            urllib3_util_connection.allowed_gai_family = _original_allowed_gai_family  # type: ignore[attr-defined]
-        elif key == "ipv4":
-            self.set_explicit("ipv6", False)
-            urllib3_util_connection.allowed_gai_family = lambda: AF_INET  # type: ignore[attr-defined]
-        else:
-            self.set_explicit("ipv4", False)
-            urllib3_util_connection.allowed_gai_family = lambda: AF_INET6  # type: ignore[attr-defined]
+        match key, value:
+            case "ipv4", True:
+                self.session.http.set_address_family(family=AF_INET)
+                self.set_explicit("ipv4", True)
+                self.set_explicit("ipv6", False)
+            case "ipv6", True:
+                self.session.http.set_address_family(family=AF_INET6)
+                self.set_explicit("ipv4", False)
+                self.set_explicit("ipv6", True)
+            # only unset if the key's value is True
+            case _ if self.get_explicit(key):
+                self.session.http.set_address_family(family=None)
+                self.set_explicit("ipv4", False)
+                self.set_explicit("ipv6", False)
 
     def _set_http_proxy(self, key, value):
         self.session.http.proxies["http"] \
@@ -397,21 +414,20 @@ class StreamlinkOptions(Options):
             = update_scheme("https://", value, force=False)  # fmt: skip
         self._deprecate_https_proxy(key)
 
+    def _set_http_cookies_files(self, _, value):
+        for item in list(value):
+            self.session.http.set_cookies_from_file(item)
+
     def _set_http_attr(self, key, value):
         setattr(self.session.http, self._OPTIONS_HTTP_ATTRS[key], value)
 
     def _set_http_disable_dh(self, key, value):
+        self.session.http.disable_dh(disable=bool(value))
         self.set_explicit(key, value)
-        if value:
-            adapter = TLSNoDHAdapter()
-        else:
-            adapter = HTTPAdapter()
-
-        self.session.http.mount("https://", adapter)
 
     @staticmethod
     def _factory_set_http_attr_key_equals_value(delimiter: str) -> Callable[[StreamlinkOptions, str, Any], None]:
-        def inner(self: "StreamlinkOptions", key: str, value: Any) -> None:
+        def inner(self: StreamlinkOptions, key: str, value: Any) -> None:
             getattr(self.session.http, self._OPTIONS_HTTP_ATTRS[key]).update(
                 value if isinstance(value, dict) else dict(self._parse_key_equals_value_string(delimiter, value)),
             )
@@ -425,14 +441,10 @@ class StreamlinkOptions(Options):
             warnings.warn(
                 f"`{key}` has been deprecated in favor of the `{name}` option",
                 StreamlinkDeprecationWarning,
-                stacklevel=3 + _get_deprecation_stacklevel_offset(),
+                stacklevel=_get_deprecation_stacklevel_offset(3),
             )
 
         return inner
-
-    # TODO: py39 support end: remove explicit dummy context binding of static method
-    _factory_set_http_attr_key_equals_value = _factory_set_http_attr_key_equals_value.__get__(object)
-    _factory_set_deprecated = _factory_set_deprecated.__get__(object)
 
     # ----
 
@@ -464,6 +476,7 @@ class StreamlinkOptions(Options):
         "ipv6": _set_ipv4_ipv6,
         "http-proxy": _set_http_proxy,
         "https-proxy": _set_http_proxy,
+        "http-cookies-files": _set_http_cookies_files,
         "http-cookies": _factory_set_http_attr_key_equals_value(";"),
         "http-headers": _factory_set_http_attr_key_equals_value(";"),
         "http-query-params": _factory_set_http_attr_key_equals_value("&"),
@@ -472,4 +485,6 @@ class StreamlinkOptions(Options):
         "http-ssl-verify": _set_http_attr,
         "http-trust-env": _set_http_attr,
         "http-timeout": _set_http_attr,
+        "hls-duration": _factory_set_deprecated("stream-segmented-duration", float),
+        "hls-segment-queue-threshold": _factory_set_deprecated("stream-segmented-queue-deadline", float),
     }

@@ -3,7 +3,7 @@ from textwrap import dedent
 
 
 CURRENT_PYTHON = sys.version_info[:2]
-REQUIRED_PYTHON = (3, 9)
+REQUIRED_PYTHON = (3, 10)
 
 # This check and everything above must remain compatible with older Python versions
 if CURRENT_PYTHON < REQUIRED_PYTHON:
@@ -27,6 +27,11 @@ if CURRENT_PYTHON < REQUIRED_PYTHON:
 
 
 from pathlib import Path  # noqa: E402
+from typing import TYPE_CHECKING  # noqa: E402
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def is_wheel_for_windows(argv):
@@ -50,7 +55,7 @@ if is_wheel_for_windows(sys.argv):
 
 
 # optional data files
-data_files = [
+data_files: "list[tuple[str, Sequence[str]]]" = [  # noqa: UP037
     # shell completions:
     #  requires pre-built completion files via shtab ("build" dependency group)
     #  `./script/build-shell-completions.sh`
@@ -71,15 +76,15 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).parent))
 
     from build_backend.commands import cmdclass
-    from setuptools import setup
+    from setuptools import Command, setup  # noqa: TC002
 
     try:
         # versioningit is only required when building from git (see pyproject.toml)
         from versioningit import get_cmdclasses
     except ImportError:  # pragma: no cover
 
-        def get_cmdclasses(_):  # type: ignore[misc]
-            return _
+        def get_cmdclasses(bases: "dict[str, type[Command]] | None" = None) -> "dict[str, type[Command]]":  # noqa: UP037
+            return bases or {}
 
     setup(
         cmdclass=get_cmdclasses(cmdclass),

@@ -8,11 +8,13 @@ import sys
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from textwrap import dedent
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, TextIO, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TextIO, TypeAlias, TypeVar
 
 
 if TYPE_CHECKING:
-    from typing_extensions import TypeAlias
+    TListOfConstants: TypeAlias = list[bool | int | float | str | None]
+    TConstantOrListOfConstants: TypeAlias = bool | int | float | str | TListOfConstants | None
+    TMappingOfConstantOrListOfConstants: TypeAlias = dict[str, TConstantOrListOfConstants]
 
 
 DEFAULT_PLUGINSPATH = Path(__file__).parents[1] / "src" / "streamlink" / "plugins"
@@ -23,10 +25,6 @@ PLUGINSJSON_COMMENTS = [
     "If you want to modify existing plugins, then please see the plugin-sideloading or developing docs:",
     "https://streamlink.github.io/",
 ]
-
-TListOfConstants: TypeAlias = "list[bool | int | float | str | None]"
-TConstantOrListOfConstants: TypeAlias = "bool | int | float | str | TListOfConstants | None"
-TMappingOfConstantOrListOfConstants: TypeAlias = "dict[str, TConstantOrListOfConstants]"
 
 
 class ParseError(ValueError):
@@ -174,7 +172,7 @@ class ParseMappingOfConstants(ParseConstantOrSequenceOfConstants):
 
         self._mapping = True
 
-        return {self.visit(k): self.visit(v) for k, v in zip(node.keys, node.values) if k}
+        return {self.visit(k): self.visit(v) for k, v in zip(node.keys, node.values, strict=True) if k}
 
 
 class ParseBinOpOr(ast.NodeVisitor):
@@ -487,7 +485,7 @@ def to_json(data: Output, fd: TextIO | None = None, comments: list[str] | None =
     textio: TextIO = fd or sys.stdout
     for line in PLUGINSJSON_COMMENTS if comments is None else comments:
         textio.write(f"// {line}\n")
-    json.dump(data, textio, cls=JSONEncoder, **outputformat)  # type: ignore[arg-type]
+    json.dump(data, textio, cls=JSONEncoder, **outputformat)  # type: ignore[arg-type, ty:invalid-argument-type]
 
 
 if __name__ == "__main__":  # pragma: no cover

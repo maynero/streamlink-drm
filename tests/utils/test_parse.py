@@ -167,9 +167,17 @@ class TestUtilsParse:
             ),
         ],
     )
-    def test_parse_html_xhtml5(self, content, expected):
+    def test_parse_html_xhtml5(self, content: bytes | str, expected: str):
         tree = parse_html(content)
         assert tree.xpath(".//body/text()") == [expected]
+
+    def test_parse_html_xhtml5_unknown_encoding(self, monkeypatch: pytest.MonkeyPatch):
+        # monkeypatch the result, so we don't have to do an expensive lookup that we know will fail
+        monkeypatch.setattr("streamlink.utils.parse.detect_encoding", lambda *_: dict(encoding=None))
+        with pytest.raises(PluginError, match=r"^Unable to detect encoding of HTML payload$"):
+            parse_html(
+                b"""<?xml version="1.0" encoding="\x00\xff\xff\x00"?><!DOCTYPE html><html><body>\xc3\xa4?></body></html>""",
+            )
 
     def test_parse_qsd(self):
         assert parse_qsd("test=1&foo=bar", schema=validate.Schema({"test": str, "foo": "bar"})) == {"test": "1", "foo": "bar"}

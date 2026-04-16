@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 import errno
-import logging
 from contextlib import suppress
 from threading import Event, Lock, Thread
+from typing import TYPE_CHECKING
 
-from streamlink.stream.stream import StreamIO
-from streamlink_cli.console.progress import Progress
-from streamlink_cli.output import HTTPOutput, Output, PlayerOutput
+from streamlink.logger import getLogger
+from streamlink_cli.output import HTTPOutput, PlayerOutput
+
+
+if TYPE_CHECKING:
+    from streamlink.stream.stream import StreamIO
+    from streamlink_cli.console.progress import Progress
+    from streamlink_cli.output import Output
 
 
 # Use the main Streamlink CLI module as logger
-log = logging.getLogger("streamlink.cli")
+log = getLogger("streamlink.cli")
 
 
 ACCEPTABLE_ERRNO = errno.EPIPE, errno.EINVAL, errno.ECONNRESET
 with suppress(AttributeError):
-    ACCEPTABLE_ERRNO += (errno.WSAECONNABORTED,)  # type: ignore[assignment,attr-defined]
+    ACCEPTABLE_ERRNO += (errno.WSAECONNABORTED,)  # type: ignore[assignment, attr-defined, ty:unresolved-attribute]
 
 
 def _noop(_):

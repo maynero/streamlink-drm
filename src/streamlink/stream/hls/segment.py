@@ -1,19 +1,24 @@
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
+from streamlink.logger import getLogger
 from streamlink.stream.segmented.segment import Segment
+from streamlink.utils.dataclass import FormattedDataclass
 from streamlink.utils.l10n import Language
 
 
-log = logging.getLogger(".".join(__name__.split(".")[:-1]))
+if TYPE_CHECKING:
+    from datetime import datetime, timedelta
+
+
+log = getLogger(".".join(__name__.split(".")[:-1]))
 
 
 _MEDIA_LANGUAGE_CODES_RESERVED_LOCAL = re.compile(r"^q[a-t][a-z]$")
+_MEDIA_LANGUAGE_CODES_PRIVATE_USE_SUBTAGS = re.compile(r"^[a-z]{2,3}-x-\S+$")
 
 
 class Resolution(NamedTuple):
@@ -34,7 +39,8 @@ class ByteRange(NamedTuple):  # version >= 4
 
 
 # EXT-X-DATERANGE
-class DateRange(NamedTuple):
+@dataclass(kw_only=True)
+class DateRange(metaclass=FormattedDataclass):
     id: str | None
     classname: str | None
     start_date: datetime | None
@@ -42,27 +48,29 @@ class DateRange(NamedTuple):
     duration: timedelta | None
     planned_duration: timedelta | None
     end_on_next: bool
-    x: dict[str, str]
+    x: dict[str, str] = field(repr=False)
 
 
 # EXT-X-KEY
-class Key(NamedTuple):
+@dataclass(kw_only=True)
+class Key:
     method: str
-    uri: str | None
-    iv: bytes | None  # version >= 2
+    uri: str | None = field(repr=False)
+    iv: bytes | None = field(repr=False)  # version >= 2
     key_format: str | None  # version >= 5
     key_format_versions: str | None  # version >= 5
 
 
 # EXT-X-MAP
-class Map(NamedTuple):
-    uri: str
+@dataclass(kw_only=True)
+class Map:
+    uri: str = field(repr=False)
     key: Key | None
     byterange: ByteRange | None
 
 
 # EXT-X-MEDIA
-@dataclass
+@dataclass(kw_only=True)
 class Media:
     uri: str | None
     type: str
@@ -81,7 +89,11 @@ class Media:
         self._parse_language()
 
     def _parse_language(self):
-        if self.language is None or _MEDIA_LANGUAGE_CODES_RESERVED_LOCAL.match(self.language):
+        if (
+            self.language is None
+            or _MEDIA_LANGUAGE_CODES_RESERVED_LOCAL.match(self.language)
+            or _MEDIA_LANGUAGE_CODES_PRIVATE_USE_SUBTAGS.match(self.language)
+        ):
             return
 
         try:
@@ -89,7 +101,7 @@ class Media:
         except LookupError:
             language = self.language
             name = self.name
-            log.warning(f"Unrecognized language for media playlist: {language=!r} {name=!r}")
+            log.warning("Unrecognized language for media playlist: language=%r name=%r", language, name)
 
 
 # EXT-X-START
@@ -99,18 +111,21 @@ class Start(NamedTuple):
 
 
 # EXT-X-STREAM-INF
-class StreamInfo(NamedTuple):
+@dataclass(kw_only=True)
+class StreamInfo:
     bandwidth: int
     program_id: str | None  # version < 6
     codecs: list[str]
     resolution: Resolution | None
+    framerate: float | None
     audio: str | None
     video: str | None
     subtitles: str | None
 
 
 # EXT-X-I-FRAME-STREAM-INF
-class IFrameStreamInfo(NamedTuple):
+@dataclass(kw_only=True)
+class IFrameStreamInfo:
     bandwidth: int
     program_id: str | None
     codecs: list[str]
@@ -118,7 +133,7 @@ class IFrameStreamInfo(NamedTuple):
     video: str | None
 
 
-@dataclass
+@dataclass(kw_only=True)
 class HLSPlaylist:
     uri: str
     stream_info: StreamInfo | IFrameStreamInfo
@@ -126,11 +141,10 @@ class HLSPlaylist:
     is_iframe: bool
 
 
-@dataclass
+@dataclass(kw_only=True)
 class HLSSegment(Segment):
     title: str | None
     key: Key | None
-    discontinuity: bool
     byterange: ByteRange | None
     date: datetime | None
     map: Map | None

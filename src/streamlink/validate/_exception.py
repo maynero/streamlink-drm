@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from textwrap import indent
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class ValidationError(ValueError):
@@ -36,7 +40,7 @@ class ValidationError(ValueError):
             return ""
         if isinstance(self.schema, str):
             return f"({self.schema})"
-        return f"({self.schema.__name__})"  # type: ignore[attr-defined]
+        return f"({self.schema.__name__})"  # type: ignore[attr-defined, ty:unresolved-attribute]
 
     def __str__(self):
         cls = self.__class__

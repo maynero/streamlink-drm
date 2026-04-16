@@ -1,15 +1,24 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import pytest
 
 from streamlink.options import Options
 from streamlink.plugins.soop import Soop
-from streamlink.session import Streamlink
 from tests.plugins import PluginCanHandleUrl
+
+
+if TYPE_CHECKING:
+    from streamlink.session import Streamlink
 
 
 class TestPluginCanHandleUrlSoop(PluginCanHandleUrl):
     __plugin__ = Soop
 
     should_match_groups = [
+        ("https://play.sooplive.com/CHANNEL", {"channel": "CHANNEL"}),
+        ("https://play.sooplive.com/CHANNEL/0123456789", {"channel": "CHANNEL", "bno": "0123456789"}),
         ("https://play.sooplive.co.kr/CHANNEL", {"channel": "CHANNEL"}),
         ("https://play.sooplive.co.kr/CHANNEL/0123456789", {"channel": "CHANNEL", "bno": "0123456789"}),
         ("https://play.afreecatv.com/CHANNEL", {"channel": "CHANNEL"}),
@@ -17,6 +26,8 @@ class TestPluginCanHandleUrlSoop(PluginCanHandleUrl):
     ]
 
     should_not_match = [
+        "https://sooplive.com/CHANNEL",
+        "https://sooplive.com/CHANNEL/0123456789",
         "https://sooplive.co.kr/CHANNEL",
         "https://sooplive.co.kr/CHANNEL/0123456789",
         "https://afreecatv.com/CHANNEL",

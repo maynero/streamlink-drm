@@ -1,33 +1,77 @@
 from __future__ import annotations
 
-import logging
 import os
 import re
 import shlex
 import subprocess
 import sys
 import warnings
-from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from pathlib import Path
 from shutil import which
 from time import sleep
-from typing import ClassVar, TextIO
+from typing import TYPE_CHECKING, ClassVar, TextIO, cast
 
 from streamlink.compat import is_win32
 from streamlink.exceptions import StreamlinkWarning
-from streamlink.utils.named_pipe import NamedPipeBase
+from streamlink.logger import getLogger
 from streamlink_cli.output.abc import Output
-from streamlink_cli.output.file import FileOutput
-from streamlink_cli.output.http import HTTPOutput
 from streamlink_cli.utils import Formatter
 
 
-log = logging.getLogger("streamlink.cli.output")
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+    from pathlib import Path
+
+    from streamlink.utils.named_pipe import NamedPipeBase
+    from streamlink_cli.output.file import FileOutput
+    from streamlink_cli.output.http import HTTPOutput
 
 
-class PlayerArgs:
-    EXECUTABLES: ClassVar[list[re.Pattern]] = []
+log = getLogger("streamlink.cli.output")
+
+
+class PlayerArgsMeta(type):
+    PLAYERS: ClassVar[list[type[PlayerArgs]]] = []
+
+    def __init__(cls, name, bases, attrs, **kwargs):
+        super().__init__(name, bases, attrs, **kwargs)
+        if attrs.get("NAME"):
+            cls.PLAYERS.append(cast("type[PlayerArgs]", cls))
+
+
+class PlayerArgs(metaclass=PlayerArgsMeta):
+    NAME: ClassVar[str] = ""
+    EXECUTABLE: ClassVar[re.Pattern | None] = None
+    FLATPAK: ClassVar[str | None] = None
+
+    def __new__(cls, path: Path, *_, args: str = "", **__):
+        executable = path.name.lower()
+        is_flatpak = False
+
+        if is_win32 and executable[-4:] == ".exe":
+            executable = executable[:-4]
+        elif (
+            path.name.lower() == "flatpak"
+            and args
+            and (parsed := shlex.split(args))
+            and (fp_idx := cls._get_flatpak_args_app_index(parsed))
+        ):
+            is_flatpak = True
+            executable = parsed[fp_idx]
+
+        playerargs = cls
+        for player in cls.PLAYERS:
+            if (
+                player.EXECUTABLE is not None
+                and player.EXECUTABLE.match(executable)
+                or is_flatpak
+                and player.FLATPAK is not None
+                and player.FLATPAK == executable
+            ):
+                playerargs = player
+                break
+
+        return super().__new__(playerargs)
 
     def __init__(
         self,
@@ -54,6 +98,25 @@ class PlayerArgs:
         else:
             self._input = self.get_stdin()
 
+    @classmethod
+    def get_player_names(cls) -> list[str]:
+        return sorted(
+            (p.NAME for p in cls.PLAYERS),
+            key=lambda s: s.lower(),
+        )
+
+    @staticmethod
+    def _get_flatpak_args_app_index(args: list[str]) -> int:
+        found_run_cmd = False
+
+        for i, arg in enumerate(args):
+            if not found_run_cmd and arg == "run":
+                found_run_cmd = True
+            elif found_run_cmd and not arg.startswith("-"):
+                return i
+
+        return 0
+
     def build(self) -> list[str]:
         args_title = []
         if self.title is not None:
@@ -68,7 +131,10 @@ class PlayerArgs:
         args_tokenized = shlex.split(args)
 
         if not self._has_var_playertitleargs:
-            args_tokenized = [*args_title, *args_tokenized]
+            if self.path.name.lower() == "flatpak" and (fp_idx := self._get_flatpak_args_app_index(args_tokenized)):
+                args_tokenized = [*args_tokenized[: fp_idx + 1], *args_title, *args_tokenized[fp_idx + 1 :]]
+            else:
+                args_tokenized = [*args_title, *args_tokenized]
         if not self._has_var_playerinput:
             args_tokenized.append(self._input)
 
@@ -94,9 +160,9 @@ class PlayerArgs:
 
 
 class PlayerArgsVLC(PlayerArgs):
-    EXECUTABLES: ClassVar[list[re.Pattern]] = [
-        re.compile(r"^vlc$", re.IGNORECASE),
-    ]
+    NAME = "VLC"
+    EXECUTABLE = re.compile(r"^vlc$")
+    FLATPAK = "org.videolan.VLC"
 
     def get_namedpipe(self, namedpipe: NamedPipeBase) -> str:
         if is_win32:
@@ -111,9 +177,9 @@ class PlayerArgsVLC(PlayerArgs):
 
 
 class PlayerArgsMPV(PlayerArgs):
-    EXECUTABLES: ClassVar[list[re.Pattern]] = [
-        re.compile(r"^mpv$", re.IGNORECASE),
-    ]
+    NAME = "mpv"
+    EXECUTABLE = re.compile(r"^mpv$")
+    FLATPAK = "io.mpv.Mpv"
 
     def get_namedpipe(self, namedpipe: NamedPipeBase) -> str:
         if is_win32:
@@ -126,9 +192,8 @@ class PlayerArgsMPV(PlayerArgs):
 
 
 class PlayerArgsPotplayer(PlayerArgs):
-    EXECUTABLES: ClassVar[list[re.Pattern]] = [
-        re.compile(r"^potplayer(?:mini(?:64)?)?$", re.IGNORECASE),
-    ]
+    NAME = "PotPlayer"
+    EXECUTABLE = re.compile(r"^potplayer(?:mini(?:64)?)?$")
 
     def get_title(self, title: str) -> list[str]:
         if self._input != "-":
@@ -145,12 +210,7 @@ class PlayerOutput(Output):
     PLAYER_ARGS_INPUT = "playerinput"
     PLAYER_ARGS_TITLE = "playertitleargs"
 
-    PLAYERS: ClassVar[Mapping[str, type[PlayerArgs]]] = {
-        "vlc": PlayerArgsVLC,
-        "mpv": PlayerArgsMPV,
-        "potplayer": PlayerArgsPotplayer,
-    }
-
+    playerargs: PlayerArgs
     player: subprocess.Popen
     stdin: int | TextIO
     stdout: int | TextIO
@@ -187,7 +247,7 @@ class PlayerOutput(Output):
 
         self.title = title
 
-        self.playerargs = self.playerargsfactory(
+        self.playerargs = PlayerArgs(
             path=path,
             args=args,
             title=title,
@@ -208,19 +268,6 @@ class PlayerOutput(Output):
             self.stdout = sys.stdout
             self.stderr = sys.stderr
 
-    @classmethod
-    def playerargsfactory(cls, path: Path, **kwargs) -> PlayerArgs:
-        executable = path.name
-        if is_win32 and executable[-4:].lower() == ".exe":
-            executable = executable[:-4]
-
-        for playerclass in cls.PLAYERS.values():
-            for re_executable in playerclass.EXECUTABLES:
-                if re_executable.search(executable):
-                    return playerclass(path=path, **kwargs)
-
-        return PlayerArgs(path=path, **kwargs)
-
     @property
     def running(self):
         sleep(0.5)
@@ -230,8 +277,9 @@ class PlayerOutput(Output):
         args = self.playerargs.build()
 
         playerpath = args[0]
-        args[0] = which(playerpath)
-        if not args[0]:
+        if resolved := which(playerpath):
+            args[0] = resolved
+        else:
             if playerpath[:1] in ('"', "'"):
                 warnings.warn(
                     "\n".join([
@@ -256,7 +304,10 @@ class PlayerOutput(Output):
             self._open_subprocess(args)
 
     def _open_call(self, args: list[str]):
-        log.debug(f"Calling: {args!r}{f', env: {self.env!r}' if self.env else ''}")
+        if self.env:
+            log.debug("Calling: %r, env: %r", args, self.env)
+        else:
+            log.debug("Calling: %r", args)
 
         environ = dict(os.environ)
         environ.update(self.env)
@@ -269,7 +320,10 @@ class PlayerOutput(Output):
         )
 
     def _open_subprocess(self, args: list[str]):
-        log.debug(f"Opening subprocess: {args!r}{f', env: {self.env!r}' if self.env else ''}")
+        if self.env:
+            log.debug("Opening subprocess: %r, env: %r", args, self.env)
+        else:
+            log.debug("Opening subprocess: %r", args)
 
         environ = dict(os.environ)
         environ.update(self.env)
@@ -301,7 +355,7 @@ class PlayerOutput(Output):
             self.namedpipe.close()
         elif self.http:
             self.http.shutdown()
-        elif not self.filename:
+        elif not self.filename and self.player.stdin:  # pragma: no branch
             self.player.stdin.close()
 
         if self.record:
@@ -328,5 +382,5 @@ class PlayerOutput(Output):
             self.namedpipe.write(data)
         elif self.http:
             self.http.write(data)
-        else:
+        elif self.player.stdin:  # pragma: no branch
             self.player.stdin.write(data)

@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import shutil
 import tempfile
 from atexit import register as _atexit_register
 from contextlib import suppress
 from copy import deepcopy
-from datetime import datetime
 from functools import wraps
 from pathlib import Path
 from threading import RLock, Timer
 from time import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from streamlink.compat import is_win32
+from streamlink.logger import getLogger
+
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 
 if is_win32:
@@ -29,7 +32,7 @@ CACHE_DIR = xdg_cache / "streamlink"
 WRITE_DEBOUNCE_TIME = 3.0
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
 def _atomic(fn):
@@ -84,8 +87,7 @@ class Cache:
         self._cache_orig.clear()
         self._cache.clear()
 
-        # noinspection PyUnresolvedReferences
-        log.trace(f"Loading cache file: {self.filename}")
+        log.trace("Loading cache file: %s", self.filename)
 
         try:
             with self.filename.open("r", encoding="utf-8") as fd:
@@ -95,7 +97,7 @@ class Cache:
         except FileNotFoundError:
             pass
         except Exception as err:
-            log.warning(f"Failed loading cache file, continuing without cache: {err}")
+            log.warning("Failed loading cache file, continuing without cache: %s", err)
 
     def _prune(self):
         now = time()
@@ -117,8 +119,7 @@ class Cache:
         if self._disabled or not self._dirty:
             return
 
-        # noinspection PyUnresolvedReferences
-        log.trace(f"Scheduling write to cache file: {WRITE_DEBOUNCE_TIME:.1f}s")
+        log.trace("Scheduling write to cache file: %.1fs", WRITE_DEBOUNCE_TIME)
         self._timer = Timer(WRITE_DEBOUNCE_TIME, self._save)
         self._timer.daemon = True
         self._timer.name = "CacheSaveThread"
@@ -131,8 +132,7 @@ class Cache:
         if self._disabled or not self._dirty:
             return
 
-        # noinspection PyUnresolvedReferences
-        log.trace(f"Writing to cache file: {self.filename}")
+        log.trace("Writing to cache file: %s", self.filename)
 
         fd = None
         try:
@@ -146,7 +146,7 @@ class Cache:
             if fd:
                 with suppress(OSError):
                     Path(fd.name).unlink()
-            log.error(f"Error while writing to cache file: {err}")
+            log.error("Error while writing to cache file: %s", err)
         else:
             self._cache_orig.clear()
             self._cache_orig.update(**deepcopy(self._cache))

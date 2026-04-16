@@ -3,16 +3,14 @@ from __future__ import annotations
 import gettext
 
 # noinspection PyProtectedMember
-from argparse import SUPPRESS, Action, ArgumentError, Namespace, _StoreConstAction, _VersionAction  # noqa: PLC2701
-from pathlib import Path
-from typing import Any
+from argparse import SUPPRESS, ArgumentError, Namespace, _StoreConstAction, _VersionAction  # noqa: PLC2701
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock, call
 
 import pytest
 
 from streamlink.exceptions import StreamlinkDeprecationWarning as SDW
 from streamlink.plugin import Plugin, pluginargument
-from streamlink.session import Streamlink
 from streamlink_cli.argparser import (
     ArgumentParser,
     build_parser,
@@ -23,6 +21,13 @@ from streamlink_cli.argparser import (
 from streamlink_cli.console import ConsoleUserInputRequester
 from streamlink_cli.exceptions import StreamlinkCLIError
 from streamlink_cli.main import main as streamlink_cli_main
+
+
+if TYPE_CHECKING:
+    from argparse import Action
+    from pathlib import Path
+
+    from streamlink.session import Streamlink
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc):
@@ -292,6 +297,50 @@ def test_setup_session_options_deprecation_override(
     assert session.options.get_explicit("option") == expected
 
 
+@pytest.mark.parametrize(
+    ("argv", "option", "value", "deprecations"),
+    [
+        pytest.param(
+            [
+                "--stream-segmented-duration=123",
+                "--hls-duration=321",
+            ],
+            "stream-segmented-duration",
+            123,
+            ["`hls-duration` has been deprecated in favor of the `stream-segmented-duration` option"],
+            id="hls-duration",
+        ),
+        pytest.param(
+            [
+                "--stream-segmented-queue-deadline=0.0",
+                "--hls-segment-queue-threshold=5.0",
+            ],
+            "stream-segmented-queue-deadline",
+            0.0,
+            ["`hls-segment-queue-threshold` has been deprecated in favor of the `stream-segmented-queue-deadline` option"],
+            id="hls-segment-queue-threshold",
+        ),
+    ],
+)
+def test_setup_session_options_deprecations(
+    parser: ArgumentParser,
+    session: Streamlink,
+    argv: list[str],
+    option: str,
+    value: Any,
+    deprecations: list[str],
+):
+    """
+    Test all deprecated ArgumentParser arguments that are mapped to Streamlink session options
+    and test whether the order is correct, so deprecated arguments are always overridden.
+    """
+    args = parser.parse_args(argv)
+    with pytest.warns(SDW) as warnings:
+        setup_session_options(session, args)
+    assert [str(dep.message) for dep in warnings.list] == deprecations
+    assert session.options.get_explicit(option) == value
+
+
 def test_cli_main_setup_session_options(monkeypatch: pytest.MonkeyPatch, parser: ArgumentParser, session: Streamlink):
     class StopTest(Exception):
         pass
@@ -387,7 +436,11 @@ class TestSetupPluginArgsAndOptions:
         ], "Parser has all arguments registered"  # fmt: skip
 
     def test_setup_options_no_plugin_arguments(self, session: Streamlink, console: Mock):
-        options = setup_plugin_options(session, Namespace(), "mock", Plugin)
+        class ConcretePlugin(Plugin):
+            def _get_streams(self):  # pragma: no cover
+                return None
+
+        options = setup_plugin_options(session, Namespace(), "mock", ConcretePlugin)
         assert options == {}
         assert options.defaults == {}
 

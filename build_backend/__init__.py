@@ -39,7 +39,7 @@ def get_requires_for_build_wheel(  # type: ignore[no-redef]
         "--build-option",
         # types-setuptools-70.3.0.20240710 has the wrong type for
         #   setuptools.command.egg_info.user_options (setuptools._distutils.cmd.Command.user_options)
-        _egg_info.user_options,  # type: ignore[arg-type]
+        _egg_info.user_options,  # type: ignore[arg-type, ty:invalid-argument-type]
     )
 
     return _build_meta.get_requires_for_build_wheel(config_settings)

@@ -1,11 +1,17 @@
+from __future__ import annotations
+
 import re
+from typing import TYPE_CHECKING
 
 import pytest
 import requests_mock as rm
 
 import streamlink_cli.main
 from streamlink.plugin import Plugin, pluginmatcher
-from streamlink.session import Streamlink
+
+
+if TYPE_CHECKING:
+    from streamlink.session import Streamlink
 
 
 @pytest.fixture(autouse=True)
@@ -70,7 +76,7 @@ def _plugins(session: Streamlink):
     indirect=["argv"],
 )
 def test_can_handle_url(requests_mock: rm.Mocker, session: Streamlink, argv: list, exit_code: int):
-    requests_mock.request(rm.ANY, "http://aborted", exc=KeyboardInterrupt)  # type: ignore[arg-type]
+    requests_mock.request(rm.ANY, "http://aborted", exc=KeyboardInterrupt)  # type: ignore[arg-type, ty:invalid-argument-type]
     requests_mock.request(rm.ANY, "http://exists", content=b"")
     requests_mock.request(rm.ANY, "http://exists-redirect", status_code=301, headers={"Location": "http://exists"})
     requests_mock.request(rm.ANY, "http://missing-redirect", status_code=301, headers={"Location": "http://missing"})

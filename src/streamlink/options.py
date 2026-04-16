@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import Any, ClassVar, Dict, Literal, TypeVar
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
 
-class Options(Dict[str, Any]):
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator, Mapping
+
+
+class Options(dict[str, Any]):
     """
     For storing options to be used by the Streamlink session and plugins, with default values.
 
@@ -43,7 +47,7 @@ class Options(Dict[str, Any]):
         super().clear()
         self.update(self._defaults)
 
-    def get(self, key: str) -> Any:  # type: ignore[override]
+    def get(self, key: str) -> Any:  # type: ignore[override, ty:invalid-method-override]
         """Get the stored value of a specific key"""
 
         normalized = self._normalize_key(key)
@@ -76,7 +80,7 @@ class Options(Dict[str, Any]):
         super().__setitem__(normalized, value)
 
     # noinspection PyMethodOverriding
-    def update(self, options: Mapping[str, Any]) -> None:  # type: ignore[override]
+    def update(self, options: Mapping[str, Any]) -> None:  # type: ignore[override, ty:invalid-method-override]
         """Merge options"""
 
         for key, value in options.items():
@@ -252,7 +256,7 @@ class Argument:
         return isinstance(other, self.__class__) and hash(self) == hash(other)
 
 
-class Arguments(Dict[str, Argument]):
+class Arguments(dict[str, Argument]):
     """
     A collection of :class:`Argument` instances for :class:`Plugin <streamlink.plugin.Plugin>` classes.
 
@@ -263,7 +267,7 @@ class Arguments(Dict[str, Argument]):
         # keep the initial arguments of the constructor in reverse order (see __iter__())
         super().__init__({arg.name: arg for arg in reversed(args)})
 
-    def __iter__(self) -> Iterator[Argument]:  # type: ignore[override]
+    def __iter__(self) -> Iterator[Argument]:  # type: ignore[override, ty:invalid-method-override]
         # iterate in reverse order due to add() being called by multiple pluginargument decorators in reverse order
         return reversed(self.values())
 
